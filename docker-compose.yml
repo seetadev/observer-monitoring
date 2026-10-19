@@ -1,0 +1,65 @@
+# Observer root server: TCP listener, dashboard, live and compute servers + MongoDB 7.
+#
+#   cp .env.example .env   # then fill in the two required values
+#   docker compose up -d --build
+#   open http://localhost:9000/live
+#
+# Ports are published on the host loopback only. Set OBSERVER_PUBLISH_HOST=0.0.0.0 to expose them
+# (do that only behind your own access control).
+x-observer: &observer
+  image: observer-monitoring:local
+  pull_policy: never
+  environment:
+    OBSERVER_MONGO_URL: mongodb://mongo:27017
+    OBSERVER_DB_NAME: ${OBSERVER_DB_NAME:-observerdb}
+    OBSERVER_ENV: ${OBSERVER_ENV:-production}
+    OBSERVER_COOKIE_SECRET: ${OBSERVER_COOKIE_SECRET:?set OBSERVER_COOKIE_SECRET in .env (openssl rand -hex 32)}
+    OBSERVER_ADMIN_PASSWORD_HASH: ${OBSERVER_ADMIN_PASSWORD_HASH:?set OBSERVER_ADMIN_PASSWORD_HASH in .env (python run.py hash-password)}
+    OBSERVER_COOKIE_SECURE: ${OBSERVER_COOKIE_SECURE:-}
+    OBSERVER_SESSION_TTL_SECONDS: ${OBSERVER_SESSION_TTL_SECONDS:-28800}
+    OBSERVER_ALLOWED_ORIGINS: ${OBSERVER_ALLOWED_ORIGINS:-}
+  depends_on:
+    mongo:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  mongo:
+    image: mongo:7
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  listener:
+    <<: *observer
+    build: .
+    command: ["listener", "8889"]
+    ports:
+      - "${OBSERVER_PUBLISH_HOST:-127.0.0.1}:8889:8889"
+
+  dash:
+    <<: *observer
+    command: ["dash", "9000"]
+    ports:
+      - "${OBSERVER_PUBLISH_HOST:-127.0.0.1}:9000:9000"
+
+  live:
+    <<: *observer
+    command: ["live", "9002"]
+    ports:
+      - "${OBSERVER_PUBLISH_HOST:-127.0.0.1}:9002:9002"
+
+  compute:
+    <<: *observer
+    command: ["compute", "9003"]
+    ports:
+      - "${OBSERVER_PUBLISH_HOST:-127.0.0.1}:9003:9003"
+
+volumes:
+  mongo_data:

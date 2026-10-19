@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-echo "TCP Listener, Dashboard Web Server, Simulation Server, Live Monitor Server & Compute Server initializing..." &
-python run.py listener 8889 &
-python run.py dash 9000 &
-python run.py sim 9001 &
-python run.py live 9002 &
-python run.py compute 9003
-
-
-
+cd "$(dirname "$0")" || exit 1
+PY="${PYTHON:-python3}"
+echo "TCP Listener, Dashboard Web Server, Simulation Server, Live Monitor Server & Compute Server initializing..."
+"$PY" run.py listener 8889 &
+"$PY" run.py dash 9000 &
+"$PY" run.py live 9002 &
+"$PY" run.py compute 9003 &
+wait

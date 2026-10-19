@@ -1,38 +1,52 @@
+import sys
+
 __author__ = 'sdpatro'
 
-import sys
-arg_list = sys.argv
+USAGE = ("usage: python run.py {listener|dash|live|compute} PORT\n"
+         "       python run.py agent [--config FILE] [--check]\n"
+         "       python run.py hash-password | agent-add NAME | agent-list | agent-revoke NAME")
 
-if len(arg_list) < 3:
-    print "ERROR: Arguments missing"
-    exit()
 
-type = arg_list[1]
-port = arg_list[2]
+def admin_command(argv):
+    import admin_cli
+    commands = {"hash-password": (0, admin_cli.hash_password_command), "agent-add": (1, admin_cli.agent_add_command),
+                "agent-list": (0, admin_cli.agent_list_command), "agent-revoke": (1, admin_cli.agent_revoke_command)}
+    arity, command = commands[argv[1]]
+    if len(argv) - 2 != arity:
+        print("ERROR: Arguments missing\n" + USAGE)
+        return 2
+    return command(*argv[2:])
 
-if arg_list[1] == "remote":
-    import remote
-    remote.start_remote_server(port)
 
-elif arg_list[1] == "listener":
-    import root
-    root.start_listener(port)
+def main(argv):
+    if len(argv) >= 2 and argv[1] in ("agent", "remote"):
+        import agent
+        return agent.main(argv[2:] if argv[1] == "agent" else [])
+    if len(argv) >= 2 and argv[1] in ("hash-password", "agent-add", "agent-list", "agent-revoke"):
+        return admin_command(argv)
+    if len(argv) < 3:
+        print("ERROR: Arguments missing\n" + USAGE)
+        return 2
 
-elif arg_list[1] == "dash":
-    import root
-    root.start_dash_server(port)
+    role, port = argv[1], argv[2]
 
-elif arg_list[1] == "sim":
-    import root
-    root.start_sim_server(port)
+    if role in ("listener", "dash", "live", "compute"):
+        import root
+        starter = {"listener": root.start_listener, "dash": root.start_dash_server,
+                   "live": root.start_live_server, "compute": root.start_compute_server}[role]
+        import auth
+        try:
+            starter(port)
+        except KeyboardInterrupt:
+            pass
+        except auth.ConfigError as exc:
+            print("Refusing to start: " + str(exc), file=sys.stderr)
+            return 1
+    else:
+        print("Invalid args\n" + USAGE)
+        return 2
+    return 0
 
-elif arg_list[1] == "live":
-    import root
-    root.start_live_server(port)
 
-elif arg_list[1] == "compute":
-    import root
-    root.start_compute_server(port)
-
-else:
-    print "Invalid args"
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

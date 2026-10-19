@@ -1,8 +1,29 @@
 $(document).ready(pageInit);
 
+// Every request carries the session cookie and, for non-GET requests, the XSRF token.
+$.ajaxSetup({
+    xhrFields: {withCredentials: true},
+    beforeSend: function(xhr, settings){
+        if(settings.type && settings.type.toUpperCase() !== "GET"){
+            var token = getCookie("_xsrf");
+            if(token) xhr.setRequestHeader("X-XSRFToken", token);
+        }
+    }
+});
+$(document).ajaxError(function(event, xhr){
+    if(xhr.status === 401 && window.location.pathname !== "/login"){
+        window.location = "/login?next=" + encodeURIComponent(window.location.pathname);
+    }
+});
+
+function logout(){
+    $.ajax({"type":"POST", "url":_apiEndPoint, "data":{action:"LOGOUT_ADMIN"},
+            "complete":function(){ window.location = "/login"; }});
+    return false;
+}
+
 _common = {"currentMachine":document.cookie};
 _apiEndPoint = "http://"+window.location.hostname+":9000/api";
-_simEndPoint = "http://"+window.location.hostname+":9001/sim";
 _liveEndPoint = "http://"+window.location.hostname+":9002/live";
 _filesEndPoint = "http://"+window.location.hostname+":9000/files";
 _computeEndPoint = "http://"+window.location.hostname+":9003/compute";
@@ -19,7 +40,9 @@ function pageInit(){
     var headerMachineName = getCookie("machine-name");
     if(headerMachineName == null)
         headerMachineName = "";
-    $("#currentMachineHeader").html("<i style=\"margin-right:5px\" class=\"fa fa-server\" aria-hidden=\"true\"></i> "+headerMachineName);
+    $("#currentMachineHeader").empty()
+        .append($("<i style=\"margin-right:5px\" class=\"fa fa-server\" aria-hidden=\"true\"></i>"))
+        .append(document.createTextNode(" " + headerMachineName));
     setPageActive();
 }
 
@@ -96,22 +119,24 @@ function loadRemoteMachines(remoteMachines){
 }
 
 function getListItem(name,ip,status){
-    var listItemElementString = "<a class=\"list-group-item\" onclick='changeMachine(\""+name+"\",\""+ip+"\");'><b style=\"padding-right:10px\">"+name+"</b></a>";
-    var $listItemElement = $(listItemElementString);
+    // Names and addresses come from the server: they are inserted as text, never as markup.
+    var $listItemElement = $("<a class=\"list-group-item\"></a>");
+    $listItemElement.on("click", function(){ changeMachine(name, ip); });
+    $listItemElement.append($("<b style=\"padding-right:10px\"></b>").text(name));
 
     if(status=="online")
-        $listItemElement.append($("<i style=\"float:right\" class=\"fa fa-exchange\" aria-hidden=\"true\"></span>"));
+        $listItemElement.append($("<i style=\"float:right\" class=\"fa fa-exchange\" aria-hidden=\"true\"></i>"));
     else
-        $listItemElement.append($("<i style=\"float:right; visibility:hidden;\" class=\"fa fa-exchange\" aria-hidden=\"true\"></span>"));
+        $listItemElement.append($("<i style=\"float:right; visibility:hidden;\" class=\"fa fa-exchange\" aria-hidden=\"true\"></i>"));
     if(getCookie("machine-name")==name)
         $listItemElement.addClass("active");
 
-    $listItemElement.append($("<div style=\"padding-right:10px;\">"+ip+"</div>"));
+    $listItemElement.append($("<div style=\"padding-right:10px;\"></div>").text(ip));
     return $listItemElement;
 }
 
 function changeMachine(machineName,machineIP){
-    document.cookie = "machine-name="+machineName;
+    document.cookie = "machine-name="+encodeURIComponent(machineName)+"; path=/; SameSite=Lax";
     location.reload();
 }
 
