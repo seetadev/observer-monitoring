@@ -1,6 +1,8 @@
 # observer-monitoring
 A monitoring tool for checking the status of local/remote servers, based on <a href="https://github.com/giampaolo/psutil">psutil</a>, <a href="https://github.com/tornadoweb/tornado">Tornado</a> and <a href="https://github.com/mongodb/mongo">MongoDB</a>.
 
+> **Status:** this code base targets Python 2 and is being modernised in stages (see the open pull requests). Dependencies were never pinned in the original release.
+
 ## How-to-run:
 ### Root server 
  Setup root server on a machine of your choice:
@@ -15,7 +17,7 @@ A monitoring tool for checking the status of local/remote servers, based on <a h
  $ bash run-remote.sh
 Observer remote running at port 8888
 Enter destination IP: 
-54.179.143.69 
+203.0.113.10
 Enter destination port: 
 8889
 Enter remote name: 
