@@ -1,15 +1,14 @@
-from tornado import gen
+import asyncio
+import datetime
+import getpass
+import json
+import os
+import platform
+
+import psutil
+from tornado.tcpclient import TCPClient
 
 __author__ = 'sdpatro'
-
-import tornado.web
-import tornado.ioloop
-import psutil
-import time
-import datetime
-from tornado.tcpclient import TCPClient
-import platform
-import json
 
 prev_recv = -1
 prev_sent = -1
@@ -71,39 +70,35 @@ def get_stats(name, nic):
     return stats
 
 
-@gen.coroutine
-def run_remote():
-    print "Enter destination IP: "
-    dest_IP = raw_input()
-    print "Enter destination port: "
-    dest_port = raw_input()
-    dest_port = int(dest_port)
-    print "Enter remote name: "
-    remote_name = raw_input()
-    print "Enter preferred NIC: "
-    nic = raw_input()
+def get_specs(remote_name):
+    return {"machine": platform.platform(), "node": platform.node(),
+            "architecture": [platform.architecture()[0], platform.architecture()[1]],
+            "system": platform.system(), "release": platform.release(), "version": platform.version(),
+            "name": remote_name, "memory": psutil.virtual_memory().total}
 
-    stream = yield TCPClient().connect(str(dest_IP), dest_port)
-    try:
-        specs = {"machine": platform.platform(), "node": platform.node(), "architecture": [platform.architecture()[0],platform.architecture()[1]],
-                 "system": platform.system(), "release": platform.release(), "version": platform.version(),
-                 "name": remote_name, "memory": psutil.virtual_memory().total}
-        specs = json.dumps(specs)
-        text = str(specs) + '\n'
-        yield stream.write(text.encode('utf-8'))
-        time.sleep(1)
-        while True:
-            stats = get_stats(remote_name, nic)
-            stats = json.dumps(stats)
-            text = str(stats) + '\n'
-            yield stream.write(text.encode('utf-8'))
-            print text
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print "Keyboard interrupt"
-        return
+
+async def run_remote():
+    dest_ip = input("Enter destination IP: ")
+    dest_port = int(input("Enter destination port: "))
+    remote_name = input("Enter remote name: ")
+    nic = input("Enter preferred NIC: ")
+
+    token = os.environ.get("OBSERVER_AGENT_TOKEN") or getpass.getpass("Enter agent token: ")
+
+    stream = await TCPClient().connect(str(dest_ip), dest_port)
+    await stream.write((json.dumps({"token": token}) + '\n').encode('utf-8'))
+    await stream.write((json.dumps(get_specs(remote_name)) + '\n').encode('utf-8'))
+    await asyncio.sleep(1)
+    while True:
+        text = json.dumps(get_stats(remote_name, nic)) + '\n'
+        await stream.write(text.encode('utf-8'))
+        print(text, flush=True)
+        await asyncio.sleep(1)
 
 
 def start_remote_server(port):
-    print "Observer remote running at port " + port
-    tornado.ioloop.IOLoop.instance().run_sync(run_remote)
+    print("Observer remote running at port " + port)
+    try:
+        asyncio.run(run_remote())
+    except KeyboardInterrupt:
+        print("Keyboard interrupt")
