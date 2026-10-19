@@ -1,0 +1,8 @@
+tornado==6.5.10
+motor==3.7.1
+pymongo==4.19.0
+psutil==7.2.2
+Pillow==13.0.0
+XlsxWriter==3.2.9
+python-dateutil==2.9.0.post0
+selenium==4.51.0
