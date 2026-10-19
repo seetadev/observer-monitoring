@@ -1,0 +1,110 @@
+# Observer root server: TCP listener, dashboard, live, compute and monitor + MongoDB 7.
+#
+#   cp .env.example .env   # then fill in the two required values
+#   docker compose up -d --build
+#   open http://localhost:9000/live
+#
+# Ports are published on the host loopback only. Set OBSERVER_PUBLISH_HOST=0.0.0.0 to expose them
+# (do that only behind your own access control).
+x-observer: &observer
+  image: observer-monitoring:local
+  pull_policy: never
+  environment:
+    OBSERVER_MONGO_URL: mongodb://mongo:27017
+    OBSERVER_DB_NAME: ${OBSERVER_DB_NAME:-observerdb}
+    OBSERVER_ENV: ${OBSERVER_ENV:-production}
+    OBSERVER_COOKIE_SECRET: ${OBSERVER_COOKIE_SECRET:?set OBSERVER_COOKIE_SECRET in .env (openssl rand -hex 32)}
+    OBSERVER_ADMIN_PASSWORD_HASH: ${OBSERVER_ADMIN_PASSWORD_HASH:?set OBSERVER_ADMIN_PASSWORD_HASH in .env (python run.py hash-password)}
+    OBSERVER_COOKIE_SECURE: ${OBSERVER_COOKIE_SECURE:-}
+    OBSERVER_SESSION_TTL_SECONDS: ${OBSERVER_SESSION_TTL_SECONDS:-28800}
+    OBSERVER_ALLOWED_ORIGINS: ${OBSERVER_ALLOWED_ORIGINS:-}
+    # The TLS proxy's fixed address; its X-Forwarded-For is believed, nobody else's.
+    OBSERVER_TRUSTED_PROXIES: ${OBSERVER_TRUSTED_PROXIES:-172.29.250.2}
+  depends_on:
+    mongo:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  mongo:
+    image: mongo:7
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  listener:
+    <<: *observer
+    build: .
+    command: ["listener", "8889"]
+    ports:
+      - "${OBSERVER_PUBLISH_HOST:-127.0.0.1}:8889:8889"
+
+  dash:
+    <<: *observer
+    command: ["dash", "9000"]
+    ports:
+      - "${OBSERVER_PUBLISH_HOST:-127.0.0.1}:9000:9000"
+
+  # Up/down state, alerts and pull probes. Run exactly one (a database lease keeps a second one idle).
+  monitor:
+    <<: *observer
+    command: ["monitor"]
+    environment:
+      OBSERVER_MONGO_URL: mongodb://mongo:27017
+      OBSERVER_DB_NAME: ${OBSERVER_DB_NAME:-observerdb}
+      OBSERVER_PROBES_FILE: /etc/observer/probes.toml
+      OBSERVER_DOWN_AFTER_SECONDS: ${OBSERVER_DOWN_AFTER_SECONDS:-15}
+      OBSERVER_ALERT_WEBHOOK_URL: ${OBSERVER_ALERT_WEBHOOK_URL:-}
+      OBSERVER_ALERT_WEBHOOK_SECRET: ${OBSERVER_ALERT_WEBHOOK_SECRET:-}
+      OBSERVER_EVENT_RETENTION_DAYS: ${OBSERVER_EVENT_RETENTION_DAYS:-30}
+    volumes:
+      - ${OBSERVER_PROBES_FILE_HOST:-./deploy/probes.toml}:/etc/observer/probes.toml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  live:
+    <<: *observer
+    command: ["live", "9002"]
+    ports:
+      - "${OBSERVER_PUBLISH_HOST:-127.0.0.1}:9002:9002"
+
+  compute:
+    <<: *observer
+    command: ["compute", "9003"]
+    ports:
+      - "${OBSERVER_PUBLISH_HOST:-127.0.0.1}:9003:9003"
+
+  # Optional TLS in front of the dashboard and the agent channel:  docker compose --profile tls up -d
+  # Needs deploy/tls/fullchain.pem and privkey.pem (deploy/tls/make-dev-cert.sh makes a self-signed pair).
+  proxy:
+    image: nginx:1.27-alpine
+    profiles: ["tls"]
+    depends_on: [dash, live, compute, listener]
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${OBSERVER_TLS_CERT_DIR:-./deploy/tls}:/etc/nginx/tls:ro
+    ports:
+      - "${OBSERVER_TLS_BIND:-127.0.0.1}:${OBSERVER_HTTPS_PORT:-8443}:443"
+      - "${OBSERVER_TLS_BIND:-127.0.0.1}:${OBSERVER_AGENT_TLS_PORT:-8890}:8890"
+    networks:
+      default:
+        ipv4_address: 172.29.250.2
+    restart: unless-stopped
+
+networks:
+  default:
+    ipam:
+      config:
+        # Fixed address for the proxy (.2); everything else is handed out from the upper half. Edit both
+        # lines and OBSERVER_TRUSTED_PROXIES if this range clashes with your network.
+        - subnet: 172.29.250.0/24
+          ip_range: 172.29.250.128/25
+
+volumes:
+  mongo_data:
