@@ -1,4 +1,4 @@
-# Observer root server: TCP listener, dashboard, live and compute servers + MongoDB 7.
+# Observer root server: TCP listener, dashboard, live, compute and monitor + MongoDB 7.
 #
 #   cp .env.example .env   # then fill in the two required values
 #   docker compose up -d --build
@@ -48,6 +48,23 @@ services:
     command: ["dash", "9000"]
     ports:
       - "${OBSERVER_PUBLISH_HOST:-127.0.0.1}:9000:9000"
+
+  # Up/down state, alerts and pull probes. Run exactly one (a database lease keeps a second one idle).
+  monitor:
+    <<: *observer
+    command: ["monitor"]
+    environment:
+      OBSERVER_MONGO_URL: mongodb://mongo:27017
+      OBSERVER_DB_NAME: ${OBSERVER_DB_NAME:-observerdb}
+      OBSERVER_PROBES_FILE: /etc/observer/probes.toml
+      OBSERVER_DOWN_AFTER_SECONDS: ${OBSERVER_DOWN_AFTER_SECONDS:-15}
+      OBSERVER_ALERT_WEBHOOK_URL: ${OBSERVER_ALERT_WEBHOOK_URL:-}
+      OBSERVER_ALERT_WEBHOOK_SECRET: ${OBSERVER_ALERT_WEBHOOK_SECRET:-}
+      OBSERVER_EVENT_RETENTION_DAYS: ${OBSERVER_EVENT_RETENTION_DAYS:-30}
+    volumes:
+      - ${OBSERVER_PROBES_FILE_HOST:-./deploy/probes.toml}:/etc/observer/probes.toml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   live:
     <<: *observer

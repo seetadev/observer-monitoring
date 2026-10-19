@@ -4,6 +4,7 @@ __author__ = 'sdpatro'
 
 USAGE = ("usage: python run.py {listener|dash|live|compute} PORT\n"
          "       python run.py agent [--config FILE] [--check]\n"
+         "       python run.py monitor\n"
          "       python run.py hash-password | agent-add NAME | agent-list | agent-revoke NAME")
 
 
@@ -22,6 +23,9 @@ def main(argv):
     if len(argv) >= 2 and argv[1] in ("agent", "remote"):
         import agent
         return agent.main(argv[2:] if argv[1] == "agent" else [])
+    if len(argv) >= 2 and argv[1] == "monitor":
+        import monitor
+        return monitor.main()
     if len(argv) >= 2 and argv[1] in ("hash-password", "agent-add", "agent-list", "agent-revoke"):
         return admin_command(argv)
     if len(argv) < 3:

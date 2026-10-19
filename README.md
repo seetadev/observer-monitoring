@@ -13,7 +13,7 @@ A monitoring tool for checking the status of local/remote servers, based on <a h
 cp .env.example .env   # fill in OBSERVER_COOKIE_SECRET and OBSERVER_ADMIN_PASSWORD_HASH
 docker compose up -d --build
 ```
-Starts MongoDB 7 plus the four Observer processes (TCP listener `8889`, dashboard `9000`, live `9002`, compute `9003`). Ports are published on `127.0.0.1` only (`OBSERVER_PUBLISH_HOST` overrides).
+Starts MongoDB 7 plus the five Observer processes (TCP listener `8889`, dashboard `9000`, live `9002`, compute `9003`, monitor). Ports are published on `127.0.0.1` only (`OBSERVER_PUBLISH_HOST` overrides).
 
 ### Root server (without Docker)
 ```bash
@@ -54,6 +54,14 @@ The agent is one file, `agent.py`, and needs only Python 3.11+ and `psutil`. It 
 | `OBSERVER_AGENT_CONFIG` | (none) | TOML file with the same keys in lower case (`deploy/agent.toml.example`) |
 
 The previous interactive `run-remote.sh` is gone; `python run.py agent` runs the same agent.
+
+## Status, alerts and probes
+
+The **monitor** process decides what is up or down on the server (the browser only displays it) and raises alerts. Run exactly one (a database lease keeps an accidental second copy idle). The `Status & Alerts` page shows current states, recent events and warns when no monitor is running.
+
+* **Agents**: down when nothing has arrived for `OBSERVER_DOWN_AFTER_SECONDS` (default 15, and at least three of the agent's own sample intervals).
+* **Pull probes** check targets that have no agent: HTTP (`GET`, no redirects, status and optional body text) and TCP (connect). They are listed in a TOML file (`OBSERVER_PROBES_FILE`, Compose mounts `deploy/probes.toml`; see `deploy/probes.example.toml`). Probes cannot be created through the web interface, so a dashboard session can never make the server contact arbitrary addresses. Restart the monitor after editing the file.
+* **Alerts**: every transition is logged (`observer.alerts`: warning for down, info for up), stored in the `events` collection (kept `OBSERVER_EVENT_RETENTION_DAYS`, default 30) and, if `OBSERVER_ALERT_WEBHOOK_URL` is set, POSTed as JSON (`event`, `kind`, `name`, `previous`, `since`, `detail`, `time`, and a `text` line that chat tools can show). With `OBSERVER_ALERT_WEBHOOK_SECRET` the request carries `X-Observer-Signature: sha256=<HMAC of the body>`. Delivery is retried three times; only the webhook host is logged, never its path or query. A first observation never alerts, and probes need `fail_after` consecutive failures (default 2) before they are reported down, so a restart or a single blip does not page anyone.
 
 ## Tests
 

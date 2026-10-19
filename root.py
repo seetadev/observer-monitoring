@@ -20,6 +20,7 @@ from tornado.web import Application
 import auth
 import config
 import db
+import monitor
 import uimodules
 import validation
 from db import ensure_machine_indexes, forget_machine, get_db, live_name, stat_name
@@ -145,9 +146,10 @@ async def update_machine(json_data, machine_ip):
             {'name': machine_name, 'ip': machine_ip, 'last_online': str(calendar.timegm(time.gmtime())),
              'machine': json_data['machine'], 'node': json_data['node'], 'architecture': json_data['architecture'],
              'system': json_data['system'], 'release': json_data['release'], 'version': json_data['release'],
-             'memory': json_data['memory']})
+             'memory': json_data['memory'], 'interval': json_data.get('interval')})
     else:
-        await machines.update_one({'name': machine_name}, {'$set': {'ip': machine_ip}})
+        await machines.update_one({'name': machine_name},
+                                  {'$set': {'ip': machine_ip, 'interval': json_data.get('interval')}})
 
 
 async def update_machine_time(machine_name):
@@ -337,10 +339,20 @@ class ApiHandler(auth.ApiBase):
 
         elif action == "GET_REMOTE_MACHINES":
             remote_machines_list = []
+            states = {doc['name']: doc async for doc in db["states"].find({"kind": "agent"})}
             async for remote_machine in db["machines"].find():
+                state = states.get(remote_machine['name'], {})
                 remote_machines_list.append({'name': remote_machine['name'], 'ip': remote_machine['ip'],
-                                             'last_online': remote_machine['last_online']})
+                                             'last_online': remote_machine['last_online'],
+                                             'state': state.get('state', 'unknown'),
+                                             'state_since': state.get('since')})
             self.finish((dict(remoteMachines=json.dumps({'machines': remote_machines_list}))))
+
+        elif action == "GET_STATES":
+            self.finish(await monitor.read_states())
+
+        elif action == "GET_EVENTS":
+            self.finish(dict(events=await monitor.read_events()))
 
         elif action == "LOGIN_ADMIN":
             await self.login()
@@ -355,6 +367,7 @@ class ApiHandler(auth.ApiBase):
                 await db[live_name(machine_name)].drop()
                 await db[stat_name(machine_name)].drop()
                 await db["machines"].delete_many({"name": machine_name})
+                await db["states"].delete_one({"_id": "agent:" + machine_name})
                 forget_machine(machine_name)
                 self.finish(dict(status="True"))
             except Exception as e:
@@ -397,6 +410,12 @@ class AdminHandler(auth.PageHandler):
         self.render("templates/admin.html")
 
 
+class StatusHandler(auth.PageHandler):
+    @tornado.web.authenticated
+    def get(self):
+        self.render("templates/status.html")
+
+
 class LoginHandler(auth.PageHandler):
     def get(self):
         self.render("templates/login.html", next_url=auth.safe_next(self.get_argument("next", None)))
@@ -415,6 +434,7 @@ def make_dash_app():
                         (r"/stat", StatHandler),
                         (r"/perf", PerfHandler),
                         (r"/cost", CostHandler),
+                        (r"/status", StatusHandler),
                         (r"/admin", AdminHandler),
                         (r"/files/(.*)", auth.AuthenticatedStaticFileHandler, {"path": config.FILES_DIR}),
                         (r"/fonts/(.*)", tornado.web.StaticFileHandler, {"path": config.FONTS_DIR}),

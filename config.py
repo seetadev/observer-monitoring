@@ -23,6 +23,15 @@ DB_NAME = os.environ.get("OBSERVER_DB_NAME", "observerdb")
 LIVE_TTL_SECONDS = int(os.environ.get("OBSERVER_LIVE_TTL_SECONDS", "3600"))
 STAT_RETENTION_DAYS = int(os.environ.get("OBSERVER_STAT_RETENTION_DAYS", "0"))
 
+# Up/down monitoring (the `monitor` process). An agent is down when it has sent nothing for this long
+# (at least three of its own sample intervals).
+DOWN_AFTER_SECONDS = float(os.environ.get("OBSERVER_DOWN_AFTER_SECONDS", "15"))
+MONITOR_TICK_SECONDS = float(os.environ.get("OBSERVER_MONITOR_TICK_SECONDS", "1"))
+PROBES_FILE = os.environ.get("OBSERVER_PROBES_FILE", "")
+ALERT_WEBHOOK_URL = os.environ.get("OBSERVER_ALERT_WEBHOOK_URL", "").strip()
+ALERT_WEBHOOK_SECRET = os.environ.get("OBSERVER_ALERT_WEBHOOK_SECRET", "")
+EVENT_RETENTION_DAYS = int(os.environ.get("OBSERVER_EVENT_RETENTION_DAYS", "30"))
+
 # Address the HTTP and TCP servers bind to. Loopback by default; the Docker image sets 0.0.0.0.
 BIND_ADDRESS = os.environ.get("OBSERVER_BIND", "127.0.0.1")
 

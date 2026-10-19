@@ -37,6 +37,11 @@ def clean_specs(record):
     cleaned = {field: _text(record.get(field)) for field in SPEC_TEXT_FIELDS}
     cleaned.update(name=record["name"], node=cleaned["node"], architecture=[_text(a) for a in architecture],
                    memory=_number(record.get("memory")))
+    if record.get("interval") is not None:
+        interval = _number(record["interval"])
+        if not 0.1 <= interval <= 3600:
+            raise ValueError("bad interval")
+        cleaned["interval"] = interval
     if not valid_name(cleaned["name"]):
         raise ValueError("bad name")
     return cleaned

@@ -42,7 +42,8 @@ async def test_remote_machines_lists_registered_machines(dash, db):
     await add_machine(db)
     body = (await api(dash, action="GET_REMOTE_MACHINES")).json()
     machines = json.loads(body["remoteMachines"])["machines"]
-    assert machines == [{"name": "box", "ip": "10.0.0.1", "last_online": "1"}]
+    assert machines == [{"name": "box", "ip": "10.0.0.1", "last_online": "1", "state": "unknown",
+                         "state_since": None}]
 
 
 async def test_get_specs(dash, db):

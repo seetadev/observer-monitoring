@@ -71,6 +71,9 @@ async def ensure_indexes():
         log.warning("machines contains duplicate names; the unique index was not created")
     await database["agents"].create_index("token_sha256", unique=True)
     await database["agents"].create_index("name", unique=True)
+    await database["states"].create_index([("kind", 1), ("name", 1)])
+    await _ttl_index(database["events"], config.EVENT_RETENTION_DAYS * 86400)
+    await database["events"].create_index("time")
 
 
 async def ensure_machine_indexes(machine):

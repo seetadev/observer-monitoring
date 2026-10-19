@@ -82,40 +82,21 @@ function remoteMachinesUpdater(){
 
 
 function loadRemoteMachines(remoteMachines){
+    // Up/down is decided by the server (monitor process); the browser only displays it.
     $("#machines-remote").empty();
-    var currentSelected = -1;
+    var current = getCookie("machine-name");
+    var selected = null;
     for(var i=0 ; i<remoteMachines.length ; i++){
-        lastOnlineStamp = new Date(remoteMachines[i]["last_online"]*1000)
-        currentStamp = new Date();
-        timeDiff = currentStamp-lastOnlineStamp;
-        var status = "online";
-
-        if(timeDiff/1000 > 10){
-            status = "offline";
+        var status = remoteMachines[i].state == "up" ? "online" : "offline";
+        if(remoteMachines[i].name == current){
+            selected = remoteMachines[i];
         }
-
-        if(remoteMachines[i].name == getCookie("machine-name")){
-            currentSelected = i;
-        }
-
-        var $item = getListItem(remoteMachines[i].name,remoteMachines[i].ip,status);
-        $("#machines-remote").append($item);
+        $("#machines-remote").append(getListItem(remoteMachines[i].name, remoteMachines[i].ip, status));
     }
 
-    if(currentSelected!=-1){
-        lastOnlineStamp = new Date(remoteMachines[currentSelected]["last_online"]*1000)
-        currentStamp = new Date();
-        timeDiff = currentStamp-lastOnlineStamp;
-        if(timeDiff/1000 > 10){
-            if($("#sys-offline-msg")!=null && remoteMachines[i].name==getCookie("machine-name")){
-                $("#sys-offline-msg").css("display","");
-            }
-        }
-        else{
-            $("#sys-offline-msg").css("display","none");
-        }
+    if(selected !== null){
+        $("#sys-offline-msg").css("display", selected.state == "up" ? "none" : "");
     }
-
 }
 
 function getListItem(name,ip,status){

@@ -147,11 +147,14 @@ def validate_nic(nic):
         raise AgentConfigError("network interface %r not found; available: %s" % (nic, ", ".join(available_nics())))
 
 
-def get_specs(name):
-    return {"machine": platform.platform(), "node": platform.node(),
-            "architecture": [platform.architecture()[0], platform.architecture()[1]],
-            "system": platform.system(), "release": platform.release(), "version": platform.version(),
-            "name": name, "memory": psutil.virtual_memory().total}
+def get_specs(name, interval=None):
+    specs = {"machine": platform.platform(), "node": platform.node(),
+             "architecture": [platform.architecture()[0], platform.architecture()[1]],
+             "system": platform.system(), "release": platform.release(), "version": platform.version(),
+             "name": name, "memory": psutil.virtual_memory().total}
+    if interval is not None:
+        specs["interval"] = interval  # lets the server judge "silent" relative to the sample interval
+    return specs
 
 
 class Collector:
@@ -244,7 +247,7 @@ class Agent:
         eof = asyncio.ensure_future(reader.read(1))
         stopping = asyncio.ensure_future(self.stop_event.wait())
         try:
-            for line in ({"token": cfg.token}, get_specs(cfg.name)):
+            for line in ({"token": cfg.token}, get_specs(cfg.name, cfg.interval)):
                 writer.write((json.dumps(line) + "\n").encode("utf-8"))
             await asyncio.wait_for(writer.drain(), WRITE_TIMEOUT)
             while not self.stop_event.is_set():

@@ -6,4 +6,5 @@ echo "TCP Listener, Dashboard Web Server, Simulation Server, Live Monitor Server
 "$PY" run.py dash 9000 &
 "$PY" run.py live 9002 &
 "$PY" run.py compute 9003 &
+"$PY" run.py monitor &
 wait
