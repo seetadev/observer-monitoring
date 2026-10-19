@@ -255,7 +255,8 @@ class Agent:
                     lasted = time.monotonic() - connected_at
                     if lasted < REJECT_WINDOW:
                         raise ConnectionError("the server closed the connection right away: token unknown or "
-                                              "revoked, or the name does not match the token")
+                                              "revoked, the name does not match the token, or the server "
+                                              "expects TLS (OBSERVER_AGENT_TLS=1)")
                     raise ConnectionError("the server closed the connection")
                 writer.write((json.dumps(self.collector.sample()) + "\n").encode("utf-8"))
                 await asyncio.wait_for(writer.drain(), WRITE_TIMEOUT)

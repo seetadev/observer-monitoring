@@ -57,6 +57,10 @@ COOKIE_SECRET = os.environ.get("OBSERVER_COOKIE_SECRET", "")
 _secure = os.environ.get("OBSERVER_COOKIE_SECURE")
 COOKIE_SECURE = None if _secure in (None, "") else _flag("OBSERVER_COOKIE_SECURE")
 
+# Reverse proxies (addresses or CIDR ranges, comma separated) whose X-Forwarded-For header is believed.
+# Empty (default): the header is ignored and the socket address is used.
+TRUSTED_PROXIES = [p.strip() for p in os.environ.get("OBSERVER_TRUSTED_PROXIES", "").split(",") if p.strip()]
+
 SESSION_TTL_SECONDS = int(os.environ.get("OBSERVER_SESSION_TTL_SECONDS", str(8 * 3600)))
 
 # The dashboard origin(s) that may call the live/compute/simulator services from the browser.

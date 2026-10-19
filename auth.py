@@ -10,6 +10,7 @@ import base64
 import datetime
 import hashlib
 import hmac
+import ipaddress
 import os
 import re
 import secrets
@@ -105,6 +106,10 @@ def validate_config():
     if len(secret) < MIN_SECRET_LENGTH or len(set(secret)) < 8:
         problems.append("OBSERVER_COOKIE_SECRET must be set to a random value of at least %d characters "
                         "(openssl rand -hex 32)" % MIN_SECRET_LENGTH)
+    try:
+        trusted_networks()
+    except ValueError as exc:
+        problems.append("OBSERVER_TRUSTED_PROXIES: " + str(exc))
     stored = config.ADMIN_PASSWORD_HASH
     if stored:
         try:
@@ -117,6 +122,47 @@ def validate_config():
                         "(generate one with: python run.py hash-password)")
     if problems:
         raise ConfigError("; ".join(problems))
+
+
+# --- client address behind a reverse proxy ---------------------------------------------------------------------
+
+def trusted_networks():
+    """Parsed OBSERVER_TRUSTED_PROXIES. Raises ValueError naming the bad entry."""
+    networks = []
+    for entry in config.TRUSTED_PROXIES:
+        try:
+            networks.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            raise ValueError("%r is not an IP address or network" % entry) from None
+    return networks
+
+
+def _address(text):
+    try:
+        return ipaddress.ip_address(text.strip())
+    except ValueError:
+        return None
+
+
+def client_address(request):
+    """The address of the real client.
+
+    X-Forwarded-For is believed only when the connection comes from a trusted proxy, and then read from the
+    right: the last entry that is not itself a trusted proxy. Anything a client put on the left is ignored.
+    """
+    peer = request.remote_ip
+    networks = trusted_networks()
+    peer_ip = _address(peer or "")
+    if not networks or peer_ip is None or not any(peer_ip in n for n in networks):
+        return peer
+    chain = request.headers.get("X-Forwarded-For", "")
+    for entry in reversed([e for e in chain.split(",") if e.strip()]):
+        ip = _address(entry)
+        if ip is None:
+            return peer          # a malformed chain is not trusted at all
+        if not any(ip in n for n in networks):
+            return str(ip)
+    return peer
 
 
 # --- sessions, CORS, handlers ----------------------------------------------------------------------------------

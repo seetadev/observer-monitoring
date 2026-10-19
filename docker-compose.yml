@@ -18,6 +18,8 @@ x-observer: &observer
     OBSERVER_COOKIE_SECURE: ${OBSERVER_COOKIE_SECURE:-}
     OBSERVER_SESSION_TTL_SECONDS: ${OBSERVER_SESSION_TTL_SECONDS:-28800}
     OBSERVER_ALLOWED_ORIGINS: ${OBSERVER_ALLOWED_ORIGINS:-}
+    # The TLS proxy's fixed address; its X-Forwarded-For is believed, nobody else's.
+    OBSERVER_TRUSTED_PROXIES: ${OBSERVER_TRUSTED_PROXIES:-172.29.250.2}
   depends_on:
     mongo:
       condition: service_healthy
@@ -77,6 +79,32 @@ services:
     command: ["compute", "9003"]
     ports:
       - "${OBSERVER_PUBLISH_HOST:-127.0.0.1}:9003:9003"
+
+  # Optional TLS in front of the dashboard and the agent channel:  docker compose --profile tls up -d
+  # Needs deploy/tls/fullchain.pem and privkey.pem (deploy/tls/make-dev-cert.sh makes a self-signed pair).
+  proxy:
+    image: nginx:1.27-alpine
+    profiles: ["tls"]
+    depends_on: [dash, live, compute, listener]
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${OBSERVER_TLS_CERT_DIR:-./deploy/tls}:/etc/nginx/tls:ro
+    ports:
+      - "${OBSERVER_TLS_BIND:-127.0.0.1}:${OBSERVER_HTTPS_PORT:-8443}:443"
+      - "${OBSERVER_TLS_BIND:-127.0.0.1}:${OBSERVER_AGENT_TLS_PORT:-8890}:8890"
+    networks:
+      default:
+        ipv4_address: 172.29.250.2
+    restart: unless-stopped
+
+networks:
+  default:
+    ipam:
+      config:
+        # Fixed address for the proxy (.2); everything else is handed out from the upper half. Edit both
+        # lines and OBSERVER_TRUSTED_PROXIES if this range clashes with your network.
+        - subnet: 172.29.250.0/24
+          ip_range: 172.29.250.128/25
 
 volumes:
   mongo_data:

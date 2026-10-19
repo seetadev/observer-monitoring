@@ -244,7 +244,7 @@ class ApiHandler(auth.ApiBase):
 
     async def login(self):
         password = self.get_argument("password", "")
-        key = self.request.remote_ip
+        key = auth.client_address(self.request)
         if auth.login_limiter.blocked(key):
             self.set_header("Retry-After", str(auth.login_limiter.window))
             self.finish_login(429, "Too many failed attempts. Try again later.")

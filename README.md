@@ -55,6 +55,17 @@ The agent is one file, `agent.py`, and needs only Python 3.11+ and `psutil`. It 
 
 The previous interactive `run-remote.sh` is gone; `python run.py agent` runs the same agent.
 
+## TLS and reverse proxies
+
+Observer itself speaks plain HTTP/TCP; put TLS in front of it.
+
+* **Compose profile `tls`** (nginx): `sh deploy/tls/make-dev-cert.sh` (self-signed, for trying it out) or place your certificate as `deploy/tls/fullchain.pem` and `privkey.pem` (or point `OBSERVER_TLS_CERT_DIR` at a directory holding them), then `docker compose --profile tls up -d --build`.
+  * The dashboard is at `https://localhost:8443/` (`OBSERVER_HTTPS_PORT`, bound to `OBSERVER_TLS_BIND`, default `127.0.0.1`). The proxy routes `/_live` and `/_compute` to the live and compute services, so the page is fully same-origin (no mixed content, no cross-origin calls).
+  * Agents can use TLS on port `8890`: `OBSERVER_AGENT_PORT=8890 OBSERVER_AGENT_TLS=1` (add `OBSERVER_AGENT_TLS_CA=<your CA file>` for a private or self-signed CA).
+  * Without the profile nothing changes: the services stay on `127.0.0.1:9000-9003`.
+  * The proxy has the fixed address `172.29.250.2` in the Compose network `172.29.250.0/24` (edit `docker-compose.yml` and `OBSERVER_TRUSTED_PROXIES` together if that range clashes with yours).
+* **Your own proxy**: set `OBSERVER_TRUSTED_PROXIES` to its address(es) or network(s). The login limiter then counts failed logins per real client: `X-Forwarded-For` is believed only when the connection comes from a trusted proxy, and is read from the right, so entries a client adds on the left are ignored. Your proxy should overwrite (not append to) the header, as `deploy/nginx/nginx.conf` does. With no trusted proxy configured the header is ignored and the socket address is used. Route `/_live` to the live service (`/live`) and `/_compute` to the compute service (`/compute`), everything else to the dashboard; the page uses the cross-port layout only when it is opened on port 9000.
+
 ## Status, alerts and probes
 
 The **monitor** process decides what is up or down on the server (the browser only displays it) and raises alerts. Run exactly one (a database lease keeps an accidental second copy idle). The `Status & Alerts` page shows current states, recent events and warns when no monitor is running.

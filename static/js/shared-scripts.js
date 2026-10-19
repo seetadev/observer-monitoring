@@ -23,10 +23,11 @@ function logout(){
 }
 
 _common = {"currentMachine":document.cookie};
-_apiEndPoint = "http://"+window.location.hostname+":9000/api";
-_liveEndPoint = "http://"+window.location.hostname+":9002/live";
-_filesEndPoint = "http://"+window.location.hostname+":9000/files";
-_computeEndPoint = "http://"+window.location.hostname+":9003/compute";
+_endpoints = observerEndpoints(window.location);
+_apiEndPoint = _endpoints.api;
+_liveEndPoint = _endpoints.live;
+_filesEndPoint = _endpoints.files;
+_computeEndPoint = _endpoints.compute;
 loc = window.location.pathname;
 _currentPage= loc.substring(loc.lastIndexOf('/')+1,loc.length);
 
