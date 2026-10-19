@@ -1,206 +1,198 @@
-import calendar
-import threading
-
-__author__ = 'sdpatro'
-from PIL import Image
-import os
-from tornado import gen
-import datetime
+import asyncio
 import base64
+import calendar
+import datetime
 import json
-import operator
+import logging
+import os
+import queue
+import threading
 import time
 
-import xlsxwriter
 import dateutil.parser
-from pymongo import MongoClient
-from tornado.iostream import StreamClosedError
-from tornado.web import RequestHandler, Application
+import tornado.iostream
 import tornado.web
-import tornado.httpclient
-import tornado.escape
-import tornado.ioloop
-from tornado.tcpserver import TCPServer
+import xlsxwriter
+from PIL import Image
 from tornado.httpserver import HTTPServer
-from selenium import webdriver
+from tornado.iostream import StreamClosedError
+from tornado.tcpserver import TCPServer
+from tornado.web import Application
 
+import auth
+import config
 import uimodules
-import Queue
+from db import get_db, live_name, stat_name, tests_name
 
-# The MongoDB server specifications, recommended to be deployed on the same drive as root server for faster access.
-DB_IP = '127.0.0.1'
-DB_PORT = 27017
+__author__ = 'sdpatro'
 
-ADMIN_PASSWORD = "letmein"
+log = logging.getLogger('observer')
 
-
-# Get MongoDB client.
-def get_db(ip, port):
-    try:
-        client = MongoClient(ip, port)
-        db = client.observerdb
-        return db
-    except Exception as e:
-        print "ERROR: " + str(e)
+MAX_LINE_BYTES = 64 * 1024
+AUTH_TIMEOUT_SECONDS = 10
+AGENT_RECHECK_SECONDS = 30
 
 
-db_connection = get_db(DB_IP, DB_PORT)
+# Scalar and vector metrics that are averaged when records are condensed.
+SCALAR_FIELDS = ('ram', 'disk_io_read', 'disk_io_write', 'disk_read_rate', 'disk_write_rate', 'bytes_recv',
+                 'bytes_sent', 'ul_rate', 'dl_rate', 'disk_total', 'disk_used')
+VECTOR_FIELDS = ('cpu', 'packets_sent', 'packets_recv')
+
+EC2_INSTANCES = [
+    {'name': 't1.micro', 'vCpu': 1, 'memory': 0.6, 'io': 1, 'hourly-cost': 0.02},
+    {'name': 't2.nano', 'vCpu': 1, 'memory': 0.5, 'io': 2, 'hourly-cost': 0.007},
+    {'name': 't2.micro', 'vCpu': 1, 'memory': 1.0, 'io': 2.5, 'hourly-cost': 0.013},
+    {'name': 't2.small', 'vCpu': 1, 'memory': 2.0, 'io': 2.5, 'hourly-cost': 0.026},
+    {'name': 't2.medium', 'vCpu': 2, 'memory': 4.0, 'io': 2.5, 'hourly-cost': 0.052},
+    {'name': 't2.large', 'vCpu': 2, 'memory': 8.0, 'io': 2.5, 'hourly-cost': 0.104},
+    {'name': 'm4.large', 'vCpu': 2, 'memory': 8.0, 'io': 3, 'hourly-cost': 0.120},
+    {'name': 'm4.xlarge', 'vCpu': 4, 'memory': 16.0, 'io': 4, 'hourly-cost': 0.239},
+    {'name': 'm4.2xlarge', 'vCpu': 8, 'memory': 32.0, 'io': 4, 'hourly-cost': 0.479},
+]
 
 
-def init_instance_pricing():  # Initializing stuff
-    ec2_pricing = db_connection['cloud-pricing'].find_one({'name': 'amazon-ec2'})
-    if ec2_pricing is None:
-        ec2_pricing_json = {'instances': [], 'name': 'amazon-ec2'}
-        ec2_pricing_json['instances'].append(
-                {'name': 't1.micro', 'vCpu': 1, 'memory': 0.6, 'io': 1, 'hourly-cost': 0.02})
-        ec2_pricing_json['instances'].append(
-                {'name': 't2.nano', 'vCpu': 1, 'memory': 0.5, 'io': 2, 'hourly-cost': 0.007})
-        ec2_pricing_json['instances'].append(
-                {'name': 't2.micro', 'vCpu': 1, 'memory': 1.0, 'io': 2.5, 'hourly-cost': 0.013})
-        ec2_pricing_json['instances'].append(
-                {'name': 't2.small', 'vCpu': 1, 'memory': 2.0, 'io': 2.5, 'hourly-cost': 0.026})
-        ec2_pricing_json['instances'].append(
-                {'name': 't2.medium', 'vCpu': 2, 'memory': 4.0, 'io': 2.5, 'hourly-cost': 0.052})
-        ec2_pricing_json['instances'].append(
-                {'name': 't2.large', 'vCpu': 2, 'memory': 8.0, 'io': 2.5, 'hourly-cost': 0.104})
-        ec2_pricing_json['instances'].append(
-                {'name': 'm4.large', 'vCpu': 2, 'memory': 8.0, 'io': 3, 'hourly-cost': 0.120})
-        ec2_pricing_json['instances'].append(
-                {'name': 'm4.xlarge', 'vCpu': 4, 'memory': 16.0, 'io': 4, 'hourly-cost': 0.239})
-        ec2_pricing_json['instances'].append(
-                {'name': 'm4.2xlarge', 'vCpu': 8, 'memory': 32.0, 'io': 4, 'hourly-cost': 0.479})
-        db_connection['cloud-pricing'].insert(ec2_pricing_json)
+async def init_instance_pricing():
+    """Seed the EC2 price table. Idempotent, so several processes can start at once."""
+    await get_db()['cloud-pricing'].update_one(
+        {'name': 'amazon-ec2'},
+        {'$setOnInsert': {'name': 'amazon-ec2', 'instances': EC2_INSTANCES}},
+        upsert=True)
 
 
-init_instance_pricing()
+def average_group(group):
+    """Average a list of stat/live records field by field."""
+    count = float(len(group))
+    result = {}
+    for field in SCALAR_FIELDS:
+        result[field] = float(sum(record[field] for record in group) / count)
+    for field in VECTOR_FIELDS:
+        width = len(group[0][field])
+        result[field] = [float(sum(record[field][i] for record in group) / count) for i in range(width)]
+    return result
 
 
 # The TCP listener endpoint for all remote senders.
 class TCPListener(TCPServer):
-    # A new remote machine connects here.
-    @gen.coroutine
-    def handle_stream(self, stream, address):
-        ip, file_no = address
-        db = get_db('127.0.0.1', 27017)
-        print "New IP connected: " + ip
-        while True:
-            try:
-                while True:
-                    yield self.insert_data(stream, db, ip)
-            except StreamClosedError:
+    """Agents must send {"token": ...} first; unknown or wrong tokens are disconnected without being stored."""
+
+    async def handle_stream(self, stream, address):
+        ip = address[0]
+        db = get_db()
+        try:
+            agent = await self.authenticate(stream)
+            if agent is None:
+                log.warning("Rejected agent connection from %s", ip)
                 return
-            break
+            print("New agent connected: " + agent + " (" + ip + ")", flush=True)
+            checked = time.monotonic()
+            while True:
+                data = await stream.read_until(b'\n', max_bytes=MAX_LINE_BYTES)
+                if time.monotonic() - checked >= AGENT_RECHECK_SECONDS:
+                    if not await auth.agent_exists(agent):
+                        log.warning("Agent %s was revoked; closing connection", agent)
+                        return
+                    checked = time.monotonic()
+                await self.store_record(data, db, ip, agent)
+        except StreamClosedError:
+            return
+        except (ValueError, KeyError, TypeError, asyncio.TimeoutError, tornado.iostream.UnsatisfiableReadError) as exc:
+            log.warning("Closing agent connection from %s: %s", ip, exc.__class__.__name__)
+        finally:
+            stream.close()
 
-    @gen.coroutine
-    def insert_data(self, stream, db, ip):
-        data = yield stream.read_until('\n'.encode('utf-8'))
+    async def authenticate(self, stream):
+        line = await asyncio.wait_for(stream.read_until(b'\n', max_bytes=MAX_LINE_BYTES), AUTH_TIMEOUT_SECONDS)
+        try:
+            message = json.loads(line)
+        except ValueError:
+            return None
+        if not isinstance(message, dict):
+            return None
+        agent = await auth.find_agent(message.get('token'))
+        return agent['name'] if agent else None
+
+    async def store_record(self, data, db, ip, agent):
         data_json = json.loads(data)
+        if not isinstance(data_json, dict) or data_json.get('name') != agent:
+            raise ValueError("record does not belong to the authenticated agent")
 
-        if data_json.has_key('node'):
-            update_machine(data_json, ip)
+        if 'node' in data_json:
+            await update_machine(data_json, ip)
 
         else:
-            live_coll = db["[" + data_json['name'] + "]-live"]
-            stat_coll = db["[" + data_json['name'] + "]-stat"]
+            live_coll = db[live_name(data_json['name'])]
+            stat_coll = db[stat_name(data_json['name'])]
 
-            update_machine_time(data_json["name"])
+            await update_machine_time(data_json["name"])
 
-            live_coll.insert(data_json)
-            condense(stat_coll, live_coll)
+            await live_coll.insert_one(data_json)
+            await condense(stat_coll, live_coll)
 
 
-def update_machine(json_data, machine_ip):
+async def update_machine(json_data, machine_ip):
+    machines = get_db()["machines"]
     machine_name = json_data["name"]
-    machine = db_connection["machines"].find_one({'name': machine_name})
+    machine = await machines.find_one({'name': machine_name})
     if machine is None:
-        db_connection["machines"].insert(
-                {'name': machine_name, 'ip': machine_ip, 'last_online': str(datetime.datetime.now().isoformat()),
-                 'machine': json_data['machine'], 'node': json_data['node'], 'architecture': json_data['architecture'],
-                 'system': json_data['system'], 'release': json_data['release'], 'version': json_data['release'],
-                 'memory': json_data['memory']})
+        await machines.insert_one(
+            {'name': machine_name, 'ip': machine_ip, 'last_online': str(datetime.datetime.now().isoformat()),
+             'machine': json_data['machine'], 'node': json_data['node'], 'architecture': json_data['architecture'],
+             'system': json_data['system'], 'release': json_data['release'], 'version': json_data['release'],
+             'memory': json_data['memory']})
     else:
-        db_connection["machines"].update_one({'name': machine_name},
-                                             {'$set': {'ip': machine_ip}})
+        await machines.update_one({'name': machine_name}, {'$set': {'ip': machine_ip}})
 
 
-def update_machine_time(machine_name):
-    db_connection["machines"].update_one({'name': machine_name},
-                                         {'$set': {'last_online': str(calendar.timegm(time.gmtime()))}})
+async def update_machine_time(machine_name):
+    await get_db()["machines"].update_one(
+        {'name': machine_name}, {'$set': {'last_online': str(calendar.timegm(time.gmtime()))}})
 
 
 # Live 60 secs monitoring data is converted to statistical 1-minute gradient limitless data.
-def condense(stat_coll, live_coll):
-    while live_coll.count() > 120:
-        live_data = live_coll.find().limit(60)
+async def condense(stat_coll, live_coll):
+    while await live_coll.count_documents({}) > 120:
+        live_data = await live_coll.find().sort('_id', 1).limit(60).to_list(60)
 
-        cpu_core_count = len(((live_data[0])['cpu']))
-        cpu_clear = []
+        stat = average_group(live_data)
+        stat['date'] = str(datetime.datetime.now().isoformat())
+        stat['name'] = live_data[-1]['name']
 
-        for i in range(0, cpu_core_count):
-            cpu_clear.append(0)
+        await live_coll.delete_many({'_id': {'$in': [record['_id'] for record in live_data]}})
+        print("Condensing...", flush=True)
+        await stat_coll.insert_one(stat)
 
-        stat = {'date': str(datetime.datetime.now().isoformat()), 'name': 'sample-name', 'cpu': cpu_clear, 'ram': 0,
-                'disk_io_read': 0, 'disk_io_write': 0, 'packets_sent': [0, 0], 'packets_recv': [0, 0], 'bytes_recv': 0,
-                'bytes_sent': 0, 'ul_rate': 0, 'dl_rate': 0, 'disk_read_rate': 0, 'disk_write_rate': 0, 'disk_total': 0,
-                'disk_used': 0}
 
-        for record in live_data:
-            stat['name'] = record['name']
-            stat['cpu'] = tuple(map(operator.add, stat['cpu'], record['cpu']))
-            stat['ram'] += record['ram']
-            stat['disk_io_read'] += record['disk_io_read']
-            stat['disk_io_write'] += record['disk_io_write']
-            stat['disk_read_rate'] += record['disk_read_rate']
-            stat['disk_write_rate'] += record['disk_write_rate']
-            stat['packets_sent'] = tuple(map(operator.add, stat['packets_sent'], record['packets_sent']))
-            stat['packets_recv'] = tuple(map(operator.add, stat['packets_recv'], record['packets_recv']))
-            stat['bytes_recv'] += record['bytes_recv']
-            stat['bytes_sent'] += record['bytes_sent']
-            stat['ul_rate'] += record['ul_rate']
-            stat['dl_rate'] += record['dl_rate']
-            stat['disk_total'] += record['disk_total']
-            stat['disk_used'] += record['disk_used']
-
-            live_coll.remove({"_id": record['_id']})
-
-        stat['cpu'] = tuple(float(x / 60.0) for x in stat['cpu'])
-        stat['ram'] = float(stat['ram'] / 60.0)
-        stat['disk_io_read'] = float(stat['disk_io_read'] / 60.0)
-        stat['disk_io_write'] = float(stat['disk_io_write'] / 60.0)
-        stat['disk_read_rate'] = float(stat['disk_read_rate'] / 60.0)
-        stat['disk_write_rate'] = float(stat['disk_write_rate'] / 60.0)
-        stat['packets_sent'] = tuple(float(x / 60.0) for x in stat['packets_sent'])
-        stat['packets_recv'] = tuple(float(x / 60.0) for x in stat['packets_recv'])
-        stat['bytes_sent'] = float(stat['bytes_sent'] / 60.0)
-        stat['bytes_recv'] = float(stat['bytes_recv'] / 60.0)
-        stat['ul_rate'] = float(stat['ul_rate'] / 60.0)
-        stat['dl_rate'] = float(stat['dl_rate'] / 60.0)
-        stat['disk_total'] = float(stat['disk_total'] / 60.0)
-        stat['disk_used'] = float(stat['disk_used'] / 60.0)
-
-        print "Condensing..."
-        stat_coll.insert(stat)
-        print str(stat)
+async def _serve_tcp(server, port, label):
+    auth.validate_config()
+    await init_instance_pricing()
+    await auth.ensure_indexes()
+    server.listen(int(port), address=config.BIND_ADDRESS)
+    print(label + " running at port " + str(port), flush=True)
+    await asyncio.Event().wait()
 
 
 # Fire up the TCP server.
 def start_listener(port):
-    server = TCPListener()
-    server.listen(port)
-    print "Observer TCP running at port " + port
-
-    tornado.ioloop.IOLoop.current().start()
+    asyncio.run(_serve_tcp(TCPListener(), port, "Observer TCP"))
 
 
 ########################################################################
 
 
 class ObserverDriver:
-    steps = []
-    snaps = []
-    web_driver = None
-    test_name = None
-    machine_name = None
+    def __init__(self, driver, test_name, machine_name):
+        self.web_driver = driver
+        self.test_name = test_name
+        self.machine_name = machine_name
+        self.steps = []
+        self.snaps = []
+
+    def _wait_for_load(self, wait_till_loaded=None):
+        while self.web_driver.execute_script('return document.readyState;') != 'complete':
+            time.sleep(0.05)
+        if wait_till_loaded is not None:
+            while not self.web_driver.execute_script('return ' + wait_till_loaded + ';'):
+                time.sleep(0.05)
 
     def set_web_driver(self, driver):
         self.web_driver = driver
@@ -215,110 +207,80 @@ class ObserverDriver:
             self.web_driver.set_window_size(height, width)
         snap_name = "files_buffer/" + self.machine_name + "_" + self.test_name + "_" + snap_date + ".jpg"
         self.web_driver.save_screenshot(snap_name)
-        with open(snap_name,
-                  "rb") as image_file:
-            encoded_string = base64.b64encode(image_file.read())
+        with open(snap_name, "rb") as image_file:
+            encoded_string = base64.b64encode(image_file.read()).decode('ascii')
             self.snaps.append({'snap_name': snap_name, 'snap_content': encoded_string})
 
     def go_to(self, url, record=False, wait_till_loaded=None):
         start_time = datetime.datetime.now()
         self.web_driver.get(url)
-        while self.web_driver.execute_script('return document.readyState;') != 'complete':
-            pass
-        if wait_till_loaded is not None:
-            while not self.web_driver.execute_script('return ' + wait_till_loaded + ';'):
-                pass
+        self._wait_for_load(wait_till_loaded)
         end_time = datetime.datetime.now()
         self.steps.append(
-                dict(action="go_to", target=url, startTime=start_time.isoformat(), endTime=end_time.isoformat(),
-                     record=record))
+            dict(action="go_to", target=url, startTime=start_time.isoformat(), endTime=end_time.isoformat(),
+                 record=record))
 
     def button_click_id(self, button_id, record=False, wait_till_loaded=None):
+        from selenium.webdriver.common.by import By
         start_time = datetime.datetime.now()
-        self.web_driver.find_element_by_id(str(button_id)).click()
-        while self.web_driver.execute_script('return document.readyState;') != 'complete':
-            pass
-        if wait_till_loaded is not None:
-            while not self.web_driver.execute_script('return ' + wait_till_loaded + ';'):
-                pass
+        self.web_driver.find_element(By.ID, str(button_id)).click()
+        self._wait_for_load(wait_till_loaded)
         end_time = datetime.datetime.now()
         self.steps.append(
-                dict(action="button_click", target=button_id, startTime=start_time.isoformat(),
-                     endTime=end_time.isoformat(),
-                     record=record))
+            dict(action="button_click", target=button_id, startTime=start_time.isoformat(),
+                 endTime=end_time.isoformat(), record=record))
 
     def button_click_class(self, class_name, btn_index, record=False, wait_till_loaded=None):
+        from selenium.webdriver.common.by import By
         start_time = datetime.datetime.now()
-        btn_list = self.web_driver.find_elements_by_class_name(class_name)
-        btn = btn_list[btn_index]
-        btn.click()
-        while self.web_driver.execute_script('return document.readyState;') != 'complete':
-            pass
-        if wait_till_loaded is not None:
-            while not self.web_driver.execute_script('return ' + wait_till_loaded + ';'):
-                pass
+        btn_list = self.web_driver.find_elements(By.CLASS_NAME, class_name)
+        btn_list[btn_index].click()
+        self._wait_for_load(wait_till_loaded)
         end_time = datetime.datetime.now()
         self.steps.append(
-                dict(action="button_click", target=class_name + " " + str(btn_index), startTime=start_time.isoformat(),
-                     endTime=end_time.isoformat(),
-                     record=record))
+            dict(action="button_click", target=class_name + " " + str(btn_index), startTime=start_time.isoformat(),
+                 endTime=end_time.isoformat(), record=record))
 
     def submit_form(self, form_element_id, record=False, wait_till_loaded=None):
+        from selenium.webdriver.common.by import By
         start_time = datetime.datetime.now()
-        el = self.web_driver.find_element_by_id(form_element_id)
-        el.submit()
-        while self.web_driver.execute_script('return document.readyState;') != 'complete':
-            pass
-        if wait_till_loaded is not None:
-            while self.web_driver.execute_script('return ' + wait_till_loaded + ';') != 'true':
-                pass
+        self.web_driver.find_element(By.ID, form_element_id).submit()
+        self._wait_for_load(wait_till_loaded)
         end_time = datetime.datetime.now()
         self.steps.append(
-                dict(action="form_submit", target=form_element_id, startTime=start_time.isoformat(),
-                     endTime=end_time.isoformat(),
-                     record=record))
+            dict(action="form_submit", target=form_element_id, startTime=start_time.isoformat(),
+                 endTime=end_time.isoformat(), record=record))
 
     def fill_form_element(self, form_element_id, input_text, record=False):
+        from selenium.webdriver.common.by import By
         start_time = datetime.datetime.now()
-        el = self.web_driver.find_element_by_id(form_element_id)
-        el.send_keys(input_text)
-        while self.web_driver.execute_script('return document.readyState;') != 'complete':
-            pass
+        self.web_driver.find_element(By.ID, form_element_id).send_keys(input_text)
+        self._wait_for_load()
         end_time = datetime.datetime.now()
         self.steps.append(
-                dict(action="fill_form_element", target=form_element_id, startTime=start_time.isoformat(),
-                     endTime=end_time.isoformat(),
-                     record=record))
+            dict(action="fill_form_element", target=form_element_id, startTime=start_time.isoformat(),
+                 endTime=end_time.isoformat(), record=record))
 
     def close_driver(self):
-        while self.web_driver.execute_script('return document.readyState;') != 'complete':
-            pass
+        self._wait_for_load()
         self.web_driver.close()
         self.web_driver.quit()
 
     def check_element(self, element_id):
-        while self.web_driver.execute_script('return document.readyState;') != 'complete':
-            pass
-        el = self.web_driver.findElement(element_id)
-        if el is None:
+        from selenium.common.exceptions import NoSuchElementException
+        from selenium.webdriver.common.by import By
+        self._wait_for_load()
+        try:
+            self.web_driver.find_element(By.ID, element_id)
+        except NoSuchElementException:
             return False
-        else:
-            return True
+        return True
 
     def get_steps(self):
         return self.steps
 
     def get_snaps(self):
         return self.snaps
-
-    def __init__(self, driver, test_name, machine_name):
-        self.web_driver = driver
-        self.test_name = test_name
-        self.machine_name = machine_name
-        del self.steps[:]
-        self.steps = []
-        del self.snaps[:]
-        self.snaps = []
 
 
 def get_excel_column(number):
@@ -336,442 +298,374 @@ def get_excel_column(number):
     return result
 
 
-class ApiHandler(RequestHandler):
-    def data_received(self, chunk):
-        pass
+class ApiHandler(auth.ApiBase):
+    def requires_auth(self):
+        return self.get_argument("action", None) not in ("LOGIN_ADMIN", "LOGOUT_ADMIN")
 
-    def set_default_headers(self):
-        self.set_header("Access-Control-Allow-Origin", "*")
+    async def login(self):
+        password = self.get_argument("password", "")
+        key = self.request.remote_ip
+        if auth.login_limiter.blocked(key):
+            self.set_header("Retry-After", str(auth.login_limiter.window))
+            self.finish_login(429, "Too many failed attempts. Try again later.")
+            return
+        stored = config.ADMIN_PASSWORD_HASH
+        ok = bool(stored) and await asyncio.to_thread(auth.verify_password, password, stored)
+        if not ok:
+            auth.login_limiter.record_failure(key)
+            self.finish_login(401, "Invalid credentials.")
+            return
+        auth.login_limiter.reset(key)
+        self.start_session()
+        self.finish(dict(auth="True"))
 
-    def error_respond(self, code, msg):
-        self.set_status(code)
-        self.write(json.dumps({
-            'status': code,
-            'message': msg
-        }))
-        self.finish()
+    def finish_login(self, status, message):
+        self.set_status(status)
+        self.finish(dict(auth="False", message=message))
 
-    # Utility function for excel columns
-
-    @gen.coroutine
-    def post(self):
-        if self.get_argument("action", None) is not None:
-            action = self.get_argument("action")
-            if action == "FETCH_INSTANCE_PRICING":
-                provider_name = self.get_argument("provider_name", None)
-                if provider_name is None:
-                    self.error_respond(400, "Provider name not provided.")
-                else:
-                    instance_pricing = db_connection["cloud-pricing"].find_one({'name': provider_name})
-                    instance_pricing['_id'] = str(instance_pricing['_id'])
-                    self.finish(dict(response_data=json.dumps(instance_pricing)))
-
-            elif action == "GET_SPECS":
-                machine_name = self.get_argument("machine_name", None)
-                if machine_name is None:
-                    self.error_respond(400, "Machine name not provided.")
-                else:
-                    machine = db_connection["machines"].find_one({'name': machine_name})
-                    self.finish({'machine': machine['machine'], 'node': machine['node'], 'version': machine['version'],
-                                 'release': machine['release'], 'system': machine['system'],
-                                 'architecture': machine['architecture'], 'memory': machine['memory']})
-
-            elif action == "GET_STAT_DATA":
-                client_name = self.get_argument("client-name")
-                stat_data_query = db_connection["[" + client_name + "]-stat"].find()
-                stat_data = []
-                for record in stat_data_query:
-                    record['_id'] = str(record['_id'])
-                    stat_data.append(record)
-
-                if len(stat_data) > 1000:
-                    gradient = int(len(stat_data) / 1000)
-                else:
-                    gradient = 1
-
-                print "Gradient: " + str(gradient)
-                stat_data = condense_data_estimation(stat_data, gradient)
-                self.finish(dict(stat_data=stat_data))
-
-            elif action == "GET_REMOTE_MACHINES":
-                remote_machines_cursor = db_connection["machines"].find()
-                remote_machines_list = []
-                for remote_machine in remote_machines_cursor:
-                    remote_machines_list.append({'name': remote_machine['name'], 'ip': remote_machine['ip'],
-                                                 'last_online': remote_machine['last_online']})
-                self.finish((dict(remoteMachines=json.dumps({'machines': remote_machines_list}))))
-
-            elif action == "SAVE_TEST":
-                test_code = self.get_argument("testCode", None)
-                test_name = self.get_argument("testName", None)
-                machine_name = self.get_argument("machine", None)
-
-                if test_code is None or test_name is None or machine_name is None:
-                    self.finish((dict(status="failure", output="Missing argument in request")))
-
-                try:
-                    test_object = {'machine': machine_name, 'script': test_code, 'name': test_name}
-                    db_connection["[" + machine_name + "]-tests"].insert(test_object)
-                    status = "success"
-                    output = test_name + " for " + machine_name + " successfully saved."
-                except Exception as e:
-                    output = e.message
-                    status = "failure"
-                self.finish((dict(status=status, output=output)))
-
-            elif action == "FETCH_TESTS_LIST":
-                machine_name = self.get_argument("machine", None)
-                if machine_name is None:
-                    self.error_respond(400, "Arguments missing")
-                    return
-                tests = db_connection["[" + machine_name + "]-tests"].find()
-                try:
-                    response_object = []
-                    for test in tests:
-                        response_object.append(
-                                {'name': test['name'], 'machine': test['machine']})
-                    self.finish(dict(response_data=json.dumps({'tests':
-                                                                   response_object})))
-                except Exception as e:
-                    self.error_respond(500, "Something went wrong: " + str(e))
-
-            elif action == "FETCH_TEST":
-                machine_name = self.get_argument("machine", None)
-                test_name = self.get_argument("test_name", None)
-                if machine_name is None or test_name is None:
-                    self.error_respond(400, "Arguments missing")
-                    return
-                test = db_connection["[" + machine_name + "]-tests"].find_one({"name": test_name})
-                try:
-                    self.finish(dict(response_data=json.dumps({'script': test['script']})))
-                except Exception as e:
-                    self.error_respond(500, "Something went wrong: " + str(e))
-
-            elif action == "LOGIN_ADMIN":
-                password = self.get_argument("password")
-                if password is None:
-                    self.error_respond(400, "Arguments missing")
-                    return
-
-                try:
-                    if password == ADMIN_PASSWORD:
-                        self.finish(dict(auth="True"))
-                    else:
-                        self.finish(dict(auth="False"))
-                except Exception as e:
-                    self.error_respond(500, "Something went wrong: " + str(e))
-
-            elif action == "DELETE_REMOTE_MACHINE":
-                machine_name = self.get_argument("machine_id")
-                if machine_name is None:
-                    self.error_respond(400, "Arguments missing")
-                    return
-
-                try:
-                    db_connection["[" + machine_name + "]-live"].drop()
-                    db_connection["[" + machine_name + "]-stat"].drop()
-                    db_connection["machines"].remove({"name": machine_name})
-                    self.finish(dict(status="True"))
-                except Exception as e:
-                    self.error_respond(500, "Something went wrong: " + str(e))
-
-
-            elif action == "SAVE_TEST_RESULT_AS":
-                json_data = json.loads(self.get_argument("jsonData"))
-                test_name = self.get_argument("test_name")
-                file_type = self.get_argument("file_type")
-
-                if file_type == "XLSX":
-
-                    live_data = json_data["live_data"]
-                    snaps = json_data["snaps_id"]
-
-                    workbook_name = test_name + "_" + datetime.datetime.now().isoformat()
-
-                    workbook = xlsxwriter.Workbook('files_buffer/' + workbook_name + ".xlsx")
-                    worksheet = workbook.add_worksheet()
-                    bold_header = workbook.add_format({'bold': True, 'font_color': '#0b9f51'})
-                    large_bold_green = workbook.add_format({'bold': True, 'font_size': 18, 'font_color': '#009245'})
-                    large_bold_blue = workbook.add_format({'bold': True, 'font_size': 18, 'font_color': '#005392'})
-
-                    worksheet.set_row(0, 30)
-                    worksheet.write("A1", "Stats", large_bold_green)
-
-                    record_offset = 3
-                    property_header_offset = 2
-                    col = 0
-
-                    for property, value in live_data[0].iteritems():
-                        worksheet.write(get_excel_column(col + 1) + str(property_header_offset + 1), str(property),
-                                        bold_header)
-                        worksheet.set_column(get_excel_column(col + 1) + ":" + get_excel_column(col + 1), 20)
-                        col += 1
-                    for j, record in enumerate(live_data):
-                        k = 0
-                        for property, value in record.iteritems():
-                            worksheet.write(get_excel_column(k + 1) + str(j + 1 + record_offset), str(value))
-                            k += 1
-
-                    worksheet.set_row(len(live_data) + 4, 30)
-                    worksheet.write("A" + str(len(live_data) + 5), "Snaps", large_bold_blue)
-
-                    images_offset = len(live_data) + 5
-                    last_cell_height = 0
-                    for snap in snaps:
-                        worksheet.insert_image("A" + str(images_offset + last_cell_height + 2), snap,
-                                               {'x_scale': 0.5, 'y_scale': 0.5})
-                        im = Image.open(snap)
-                        width, height = im.size
-                        last_cell_height += int(height / 30)
-
-                    workbook.close()
-                    self.finish(dict(file_name=workbook_name))
-
-                elif file_type == "CSV":
-                    live_data = json_data["live_data"]
-                    csv_file_name = test_name + "_" + datetime.datetime.now().isoformat() + ".csv"
-                    csv_fp = open("files_buffer/" + csv_file_name, 'w')
-
-                    property_string = ""
-                    for property, value in live_data[0].iteritems():
-                        property_string += property + ","
-                    property_string = property_string[:-1]
-                    property_string += "\n"
-                    csv_fp.write(property_string)
-                    for i, record in enumerate(live_data):
-                        record_string = ""
-                        for property, value in record.iteritems():
-                            record_string += str(value) + ","
-                        record_string = record_string[:-1]
-                        record_string += "\n"
-                        csv_fp.write(record_string)
-                    self.finish(dict(file_name=csv_file_name))
-            else:
-                self.error_respond(400, "Not a valid action")
-
-
-        else:
+    async def post(self):
+        if self.get_argument("action", None) is None:
             self.error_respond(400, "No action specified")
-        pass
+            return
+
+        db = get_db()
+        action = self.get_argument("action")
+        if action == "FETCH_INSTANCE_PRICING":
+            provider_name = self.get_argument("provider_name", None)
+            if provider_name is None:
+                self.error_respond(400, "Provider name not provided.")
+            else:
+                instance_pricing = await db["cloud-pricing"].find_one({'name': provider_name})
+                instance_pricing['_id'] = str(instance_pricing['_id'])
+                self.finish(dict(response_data=json.dumps(instance_pricing)))
+
+        elif action == "GET_SPECS":
+            machine_name = self.get_argument("machine_name", None)
+            if machine_name is None:
+                self.error_respond(400, "Machine name not provided.")
+            else:
+                machine = await db["machines"].find_one({'name': machine_name})
+                self.finish({'machine': machine['machine'], 'node': machine['node'], 'version': machine['version'],
+                             'release': machine['release'], 'system': machine['system'],
+                             'architecture': machine['architecture'], 'memory': machine['memory']})
+
+        elif action == "GET_STAT_DATA":
+            client_name = self.get_argument("client-name")
+            stat_data = []
+            async for record in db[stat_name(client_name)].find():
+                record['_id'] = str(record['_id'])
+                stat_data.append(record)
+
+            if len(stat_data) > 1000:
+                gradient = int(len(stat_data) / 1000)
+            else:
+                gradient = 1
+
+            stat_data = condense_data_estimation(stat_data, gradient)
+            self.finish(dict(stat_data=stat_data))
+
+        elif action == "GET_REMOTE_MACHINES":
+            remote_machines_list = []
+            async for remote_machine in db["machines"].find():
+                remote_machines_list.append({'name': remote_machine['name'], 'ip': remote_machine['ip'],
+                                             'last_online': remote_machine['last_online']})
+            self.finish((dict(remoteMachines=json.dumps({'machines': remote_machines_list}))))
+
+        elif action == "SAVE_TEST":
+            test_code = self.get_argument("testCode", None)
+            test_name = self.get_argument("testName", None)
+            machine_name = self.get_argument("machine", None)
+
+            if test_code is None or test_name is None or machine_name is None:
+                self.finish((dict(status="failure", output="Missing argument in request")))
+                return
+
+            try:
+                test_object = {'machine': machine_name, 'script': test_code, 'name': test_name}
+                await db[tests_name(machine_name)].insert_one(test_object)
+                status = "success"
+                output = test_name + " for " + machine_name + " successfully saved."
+            except Exception as e:
+                output = str(e)
+                status = "failure"
+            self.finish((dict(status=status, output=output)))
+
+        elif action == "FETCH_TESTS_LIST":
+            machine_name = self.get_argument("machine", None)
+            if machine_name is None:
+                self.error_respond(400, "Arguments missing")
+                return
+            try:
+                response_object = []
+                async for test in db[tests_name(machine_name)].find():
+                    response_object.append({'name': test['name'], 'machine': test['machine']})
+                self.finish(dict(response_data=json.dumps({'tests': response_object})))
+            except Exception as e:
+                self.error_respond(500, "Something went wrong: " + str(e))
+
+        elif action == "FETCH_TEST":
+            machine_name = self.get_argument("machine", None)
+            test_name = self.get_argument("test_name", None)
+            if machine_name is None or test_name is None:
+                self.error_respond(400, "Arguments missing")
+                return
+            test = await db[tests_name(machine_name)].find_one({"name": test_name})
+            try:
+                self.finish(dict(response_data=json.dumps({'script': test['script']})))
+            except Exception as e:
+                self.error_respond(500, "Something went wrong: " + str(e))
+
+        elif action == "LOGIN_ADMIN":
+            await self.login()
+
+        elif action == "LOGOUT_ADMIN":
+            self.end_session()
+            self.finish(dict(auth="False"))
+
+        elif action == "DELETE_REMOTE_MACHINE":
+            machine_name = self.get_argument("machine_id")
+            try:
+                await db[live_name(machine_name)].drop()
+                await db[stat_name(machine_name)].drop()
+                await db["machines"].delete_many({"name": machine_name})
+                self.finish(dict(status="True"))
+            except Exception as e:
+                self.error_respond(500, "Something went wrong: " + str(e))
+
+        elif action == "SAVE_TEST_RESULT_AS":
+            json_data = json.loads(self.get_argument("jsonData"))
+            test_name = self.get_argument("test_name")
+            file_type = self.get_argument("file_type")
+
+            if file_type == "XLSX":
+
+                live_data = json_data["live_data"]
+                snaps = json_data["snaps_id"]
+
+                workbook_name = test_name + "_" + datetime.datetime.now().isoformat()
+
+                workbook = xlsxwriter.Workbook(os.path.join(config.FILES_DIR, workbook_name + ".xlsx"))
+                worksheet = workbook.add_worksheet()
+                bold_header = workbook.add_format({'bold': True, 'font_color': '#0b9f51'})
+                large_bold_green = workbook.add_format({'bold': True, 'font_size': 18, 'font_color': '#009245'})
+                large_bold_blue = workbook.add_format({'bold': True, 'font_size': 18, 'font_color': '#005392'})
+
+                worksheet.set_row(0, 30)
+                worksheet.write("A1", "Stats", large_bold_green)
+
+                record_offset = 3
+                property_header_offset = 2
+                col = 0
+
+                for prop in live_data[0]:
+                    worksheet.write(get_excel_column(col + 1) + str(property_header_offset + 1), str(prop),
+                                    bold_header)
+                    worksheet.set_column(get_excel_column(col + 1) + ":" + get_excel_column(col + 1), 20)
+                    col += 1
+                for j, record in enumerate(live_data):
+                    for k, value in enumerate(record.values()):
+                        worksheet.write(get_excel_column(k + 1) + str(j + 1 + record_offset), str(value))
+
+                worksheet.set_row(len(live_data) + 4, 30)
+                worksheet.write("A" + str(len(live_data) + 5), "Snaps", large_bold_blue)
+
+                images_offset = len(live_data) + 5
+                last_cell_height = 0
+                for snap in snaps:
+                    worksheet.insert_image("A" + str(images_offset + last_cell_height + 2), snap,
+                                           {'x_scale': 0.5, 'y_scale': 0.5})
+                    im = Image.open(snap)
+                    width, height = im.size
+                    last_cell_height += int(height / 30)
+
+                workbook.close()
+                self.finish(dict(file_name=workbook_name))
+
+            elif file_type == "CSV":
+                live_data = json_data["live_data"]
+                csv_file_name = test_name + "_" + datetime.datetime.now().isoformat() + ".csv"
+                with open(os.path.join(config.FILES_DIR, csv_file_name), 'w') as csv_fp:
+                    csv_fp.write(",".join(live_data[0]) + "\n")
+                    for record in live_data:
+                        csv_fp.write(",".join(str(value) for value in record.values()) + "\n")
+                self.finish(dict(file_name=csv_file_name))
+        else:
+            self.error_respond(400, "Not a valid action")
 
 
-class LiveHandler(RequestHandler):
-    def data_received(self, chunk):
-        pass
-
+class LiveHandler(auth.PageHandler):
+    @tornado.web.authenticated
     def get(self):
         self.render("templates/live.html")
 
 
-class StatHandler(RequestHandler):
-    def data_received(self, chunk):
-        pass
-
+class StatHandler(auth.PageHandler):
+    @tornado.web.authenticated
     def get(self):
         self.render("templates/stat.html")
 
 
-class PerfHandler(RequestHandler):
-    def data_received(self, chunk):
-        pass
-
+class PerfHandler(auth.PageHandler):
+    @tornado.web.authenticated
     def get(self):
         self.render("templates/perf.html")
 
 
-class TestHandler(RequestHandler):
-    def data_received(self, chunk):
-        pass
-
-    def post(self):
-        pass
-
-
-class XLSXHandler(RequestHandler):
-    def post(self):
-        pass
-
-    def get(self):
-        request_url = self.request.uri
-        self.write(request_url)
-        pass
-
-
-class CostHandler(RequestHandler):
-    def post(self):
-        pass
-
+class CostHandler(auth.PageHandler):
+    @tornado.web.authenticated
     def get(self):
         self.render("templates/cost.html")
 
 
-class AdminHandler(RequestHandler):
-    def post(self):
-        pass
-
+class AdminHandler(auth.PageHandler):
+    @tornado.web.authenticated
     def get(self):
         self.render("templates/admin.html")
 
 
-def start_dash_server(port):
-    settings = {
-        "ui_modules": uimodules
-    }
-    app = Application([(r"/api", ApiHandler),
-                       (r"/live", LiveHandler),
-                       (r"/stat", StatHandler),
-                       (r"/perf", PerfHandler),
-                       (r"/cost", CostHandler),
-                       (r"/test", TestHandler),
-                       (r"/admin", AdminHandler),
-                       (r"/files/(.*)", tornado.web.StaticFileHandler,
-                        {"path": "../observer-monitoring/files_buffer/"}),
-                       (r"/fonts/(.*)", tornado.web.StaticFileHandler,
-                        {"path": "../observer-monitoring/fonts/"}),
-                       (r"/(.*)", tornado.web.StaticFileHandler, {"path": "../observer-monitoring/static"})],
-                      autoreload=True, **settings)
+class LoginHandler(auth.PageHandler):
+    def get(self):
+        self.render("templates/login.html", next_url=auth.safe_next(self.get_argument("next", None)))
+
+
+def _app_settings(**extra):
+    return auth.app_settings(**extra)
+
+
+def make_dash_app():
+    os.makedirs(config.FILES_DIR, exist_ok=True)
+    return Application([(r"/", tornado.web.RedirectHandler, {"url": "/live"}),
+                        (r"/api", ApiHandler),
+                        (r"/login", LoginHandler),
+                        (r"/live", LiveHandler),
+                        (r"/stat", StatHandler),
+                        (r"/perf", PerfHandler),
+                        (r"/cost", CostHandler),
+                        (r"/admin", AdminHandler),
+                        (r"/files/(.*)", auth.AuthenticatedStaticFileHandler, {"path": config.FILES_DIR}),
+                        (r"/fonts/(.*)", tornado.web.StaticFileHandler, {"path": config.FONTS_DIR}),
+                        (r"/(.*)", tornado.web.StaticFileHandler, {"path": config.STATIC_DIR})],
+                       **_app_settings(ui_modules=uimodules))
+
+
+async def _serve_http(app, port, label):
+    auth.validate_config()
+    await init_instance_pricing()
     server = HTTPServer(app)
-    server.listen(port)
-    print "Observer Dashboard running at port " + port
-    tornado.ioloop.IOLoop.current().start()
+    server.listen(int(port), address=config.BIND_ADDRESS)
+    print(label + " running at port " + str(port), flush=True)
+    await asyncio.Event().wait()
+
+
+def start_dash_server(port):
+    asyncio.run(_serve_http(make_dash_app(), port, "Observer Dashboard"))
 
 
 ##############################################################
-test_output = []
-output_queue = Queue.Queue()
-test_error_queue = Queue.Queue()
 
 
 def runTests(test_code, test_name, machine_name, output_queue, test_error_queue):
+    from selenium import webdriver
     driver = ObserverDriver(webdriver.Chrome(), test_name, machine_name)
     try:
-        exec test_code
+        scope = dict(globals())
+        scope.update(driver=driver, test_name=test_name, machine_name=machine_name)
+        exec(test_code, scope)
     except Exception as e:
-        test_error_msg = str(e)
-        test_error_queue.put(test_error_msg)
+        test_error_queue.put(str(e))
 
     driver.close_driver()
     test_output = {'steps': driver.get_steps(), 'snaps': driver.get_snaps()}
     output_queue.put(test_output)
 
 
-class SimHandler(RequestHandler):
-    def data_received(self, chunk):
-        pass
+def _run_test_instances(test_code, test_name, machine_name, instances_count):
+    status = "success"
+    queue_list = []
+    test_error_queue = queue.Queue()
+    try:
+        thread_instances = []
+        for i in range(0, instances_count):
+            queue_list.append(queue.Queue())
+            thread_instances.append(
+                threading.Thread(target=runTests,
+                                 args=(test_code, test_name, machine_name, queue_list[i], test_error_queue)))
+            thread_instances[i].start()
+        for thread in thread_instances:
+            thread.join()
+    except Exception:
+        status = "failure"
 
-    def error_respond(self, code, msg):
-        self.set_status(code)
-        self.write(json.dumps({
-            'status': code,
-            'message': msg
-        }))
-        self.finish()
+    test_error_msg = None
+    while not test_error_queue.empty():
+        test_error_msg = test_error_queue.get()
 
-    def set_default_headers(self):
-        self.set_header("Access-Control-Allow-Origin", "*")
+    if test_error_msg:
+        status = "failure"
 
-    def post(self):
+    test_output = []
+    if status == "success":
+        for q in queue_list:
+            test_output_unit_list = []
+            while not q.empty():
+                test_output_unit_list.append(q.get())
+            test_output.append(test_output_unit_list)
+    return status, test_error_msg, test_output
+
+
+class SimHandler(auth.ApiBase):
+    async def post(self):
         action = self.get_argument("action", None)
-        if action is not None:
-            if action == "RUN_TEST":
-                test_name = self.get_argument("testName", None)
-                machine_name = self.get_argument("machineName", None)
-                test_code = self.get_argument("testCode", None)
-                instances_count = int(self.get_argument("instancesCount", None))
-                status = "success"
-                queue_list = []
-                test_error_msg = None
-                test_error_queue = Queue.Queue()
-                try:
-                    thread_instances = []
-                    for i in range(0, instances_count):
-                        queue_list.append(Queue.Queue())
-                        thread_instances.append(
-                                threading.Thread(target=runTests,
-                                                 args=(
-                                                     test_code, test_name, machine_name, queue_list[i],
-                                                     test_error_queue)))
-                        thread_instances[i].start()
-                    for i in range(0, instances_count):
-                        thread_instances[i].join()
-                except Exception as e:
-                    status = "failure"
-
-                while not test_error_queue.empty():
-                    test_error_msg = test_error_queue.get()
-
-                if test_error_msg:
-                    status = "failure"
-
-                if status == "success":
-                    test_output = []
-                    for i in range(0, instances_count):
-                        test_output_unit_list = []
-                        while not queue_list[i].empty():
-                            test_output_unit_list.append(queue_list[i].get())
-                        test_output.append(test_output_unit_list)
-                    self.finish((dict(status=status, output=json.dumps(test_output))))
-
-                elif status == "failure":
-                    self.finish((dict(status=status, msg=test_error_msg)))
-            pass
-
-        else:
+        if action is None:
             self.error_respond(400, "No action specified")
+            return
+        if action == "RUN_TEST":
+            test_name = self.get_argument("testName", None)
+            machine_name = self.get_argument("machineName", None)
+            test_code = self.get_argument("testCode", None)
+            instances_count = int(self.get_argument("instancesCount", None))
+            status, test_error_msg, test_output = await asyncio.to_thread(
+                _run_test_instances, test_code, test_name, machine_name, instances_count)
+            if status == "success":
+                self.finish((dict(status=status, output=json.dumps(test_output))))
+            else:
+                self.finish((dict(status=status, msg=test_error_msg)))
+
+
+def make_sim_app():
+    return Application([(r"/sim", SimHandler)], **_app_settings())
 
 
 def start_sim_server(port):
-    sim_app = Application([(r"/sim", SimHandler)],
-                          autoreload=True)
-    server = HTTPServer(sim_app)
-    server.listen(port)
-    print "Observer Simulator running at port " + port
-    tornado.ioloop.IOLoop.current().start()
+    asyncio.run(_serve_http(make_sim_app(), port, "Observer Simulator"))
 
 
 #####################################################
 
-class LiveMonitorHandler(RequestHandler):
-    def data_received(self, chunk):
-        pass
-
-    def error_respond(self, code, msg):
-        self.set_status(code)
-        self.write(json.dumps({
-            'status': code,
-            'message': msg
-        }))
-        self.finish()
-
-    def set_default_headers(self):
-        self.set_header("Access-Control-Allow-Origin", "*")
-
-    @gen.coroutine
-    def get_live_data(self, client_name):
-        live_data_query = db_connection["[" + client_name + "]-live"].find().sort("_id", -1).limit(1)
-        for record in live_data_query:
+class LiveMonitorHandler(auth.ApiBase):
+    async def get_live_data(self, client_name):
+        record = await get_db()[live_name(client_name)].find_one(sort=[("_id", -1)])
+        if record is not None:
             record['_id'] = str(record['_id'])
             self.finish(record)
 
-    @gen.coroutine
-    def post(self):
+    async def post(self):
         action = self.get_argument("action", None)
         if action is not None:
             if action == "GET_LIVE_DATA":
                 client_name = self.get_argument("client-name")
-                yield self.get_live_data(client_name)
+                await self.get_live_data(client_name)
 
         else:
             self.error_respond(400, "No action specified")
 
 
+def make_live_app():
+    return Application([(r"/live", LiveMonitorHandler)], **_app_settings())
+
+
 def start_live_server(port):
-    sim_app = Application([(r"/live", LiveMonitorHandler)],
-                          autoreload=True)
-    server = HTTPServer(sim_app)
-    server.listen(port)
-    print "Observer Live running at port " + port
-    tornado.ioloop.IOLoop.current().start()
+    asyncio.run(_serve_http(make_live_app(), port, "Observer Live"))
 
 
 #####################################################
@@ -790,11 +684,12 @@ def get_delta_time_seconds(stat_records):
     return delta_time_seconds
 
 
-def get_uptime_percentage(machine):
-    stat_count = db_connection["[" + machine + "]-stat"].count()
+async def get_uptime_percentage(machine):
+    stat_coll = get_db()[stat_name(machine)]
+    stat_count = await stat_coll.count_documents({})
 
-    newest_stat_record = db_connection["[" + machine + "]-stat"].find().sort("date", -1).limit(1)
-    oldest_stat_record = db_connection["[" + machine + "]-stat"].find().sort("date", 1).limit(1)
+    newest_stat_record = await stat_coll.find().sort("date", -1).limit(1).to_list(1)
+    oldest_stat_record = await stat_coll.find().sort("date", 1).limit(1).to_list(1)
 
     old_timestamp = dateutil.parser.parse(oldest_stat_record[0]["date"])
     new_timestamp = dateutil.parser.parse(newest_stat_record[0]["date"])
@@ -820,129 +715,79 @@ def get_bandwidth_usage(records):
 def condense_data_estimation(stat_records, minute_gradient):
     new_stat_records = []
     while len(stat_records) > minute_gradient:
-        temp_record = stat_records[0]
-        for i in range(1, minute_gradient):
-            record = stat_records[i]
-            temp_record['name'] = record['name']
-            temp_record['cpu'] = tuple(map(operator.add, temp_record['cpu'], record['cpu']))
-            temp_record['ram'] += record['ram']
-            temp_record['disk_io_read'] += record['disk_io_read']
-            temp_record['disk_io_write'] += record['disk_io_write']
-            temp_record['disk_read_rate'] += record['disk_read_rate']
-            temp_record['disk_write_rate'] += record['disk_write_rate']
-            temp_record['packets_sent'] = tuple(map(operator.add, temp_record['packets_sent'], record['packets_sent']))
-            temp_record['packets_recv'] = tuple(map(operator.add, temp_record['packets_recv'], record['packets_recv']))
-            temp_record['bytes_recv'] += record['bytes_recv']
-            temp_record['bytes_sent'] += record['bytes_sent']
-            temp_record['ul_rate'] += record['ul_rate']
-            temp_record['dl_rate'] += record['dl_rate']
-            temp_record['disk_total'] += record['disk_total']
-            temp_record['disk_used'] += record['disk_used']
-
-        temp_record['cpu'] = tuple(float(x / minute_gradient) for x in temp_record['cpu'])
-        temp_record['ram'] = float(temp_record['ram'] / minute_gradient)
-        temp_record['disk_io_read'] = float(temp_record['disk_io_read'] / minute_gradient)
-        temp_record['disk_io_write'] = float(temp_record['disk_io_write'] / minute_gradient)
-        temp_record['disk_read_rate'] = float(temp_record['disk_read_rate'] / minute_gradient)
-        temp_record['disk_write_rate'] = float(temp_record['disk_write_rate'] / minute_gradient)
-        temp_record['packets_sent'] = tuple(float(x / minute_gradient) for x in temp_record['packets_sent'])
-        temp_record['packets_recv'] = tuple(float(x / minute_gradient) for x in temp_record['packets_recv'])
-        temp_record['bytes_sent'] = float(temp_record['bytes_sent'] / minute_gradient)
-        temp_record['bytes_recv'] = float(temp_record['bytes_recv'] / minute_gradient)
-        temp_record['ul_rate'] = float(temp_record['ul_rate'] / minute_gradient)
-        temp_record['dl_rate'] = float(temp_record['dl_rate'] / minute_gradient)
-        temp_record['disk_total'] = float(temp_record['disk_total'] / minute_gradient)
-        temp_record['disk_used'] = float(temp_record['disk_used'] / minute_gradient)
+        group = stat_records[:minute_gradient]
+        temp_record = dict(group[0])
+        temp_record['name'] = group[-1]['name']
+        temp_record.update(average_group(group))
 
         stat_records = stat_records[minute_gradient:]
         new_stat_records.append(temp_record)
     return new_stat_records
 
 
-class ComputeHandler(RequestHandler):
-    def data_received(self, chunk):
-        pass
-
-    def error_respond(self, code, msg):
-        self.set_status(code)
-        self.write(json.dumps({
-            'status': code,
-            'message': msg
-        }))
-        self.finish()
-
-    def set_default_headers(self):
-        self.set_header("Access-Control-Allow-Origin", "*")
-
-    @gen.coroutine
-    def post(self):
+class ComputeHandler(auth.ApiBase):
+    async def post(self):
         action = self.get_argument("action", None)
         machine = self.get_argument("machine", None)
         days_duration = self.get_argument("days_duration", None)
-        if action is not None:
-            if action == "GET_COST_STATS":
-                if machine is not None:
-                    stat_count, minutes_count = get_uptime_percentage(machine)
-                    self.finish({'duration': minutes_count, 'count': stat_count})
-                else:
-                    self.error_respond(400, "No machine name specified.")
-            if action == "FETCH_ESTIMATED_CHARTS":
-                if machine is None:
-                    self.error_respond(400, "No machine name specified.")
-                elif days_duration is None:
-                    self.error_respond(400, "Days duration not specified.")
-                else:
-                    stat_records_cursor = db_connection["[" + machine + "]-stat"].find()
-                    stat_records = []
-
-                    for stat_record in stat_records_cursor:
-                        stat_records.append(stat_record)
-
-                    if len(stat_records) < 5:
-                        self.finish(dict(status="failure", message="Not enough data"))
-                    else:
-                        i = 0
-                        initial_delta_time = dateutil.parser.parse(
-                                stat_records[len(stat_records) - 1]['date']) - dateutil.parser.parse(
-                                stat_records[0]['date'])
-
-                        print "initial_delta_time " + str(initial_delta_time.days) + " " + str(
-                                initial_delta_time.seconds)
-                        if int(get_delta_time_days(stat_records)) < int(days_duration):
-                            while int(get_delta_time_days(stat_records)) < int(days_duration):
-                                stat_records.append(stat_records[i].copy())
-                                cur_date = stat_records[len(stat_records) - 1]['date']
-                                cur_date = dateutil.parser.parse(cur_date)
-                                cur_date += initial_delta_time + datetime.timedelta(1, 60)
-                                stat_records[len(stat_records) - 1]['date'] = cur_date.isoformat()
-                                i += 1
-                        else:
-                            while int(get_delta_time_days(stat_records)) > int(days_duration):
-                                stat_records = stat_records[:-1]
-                            while int(get_delta_time_seconds(stat_records)) > 60:
-                                stat_records = stat_records[:-1]
-
-                        if int(len(stat_records) / 1000) > 0:
-                            minute_gradient = int(len(stat_records) / 1000)
-                        else:
-                            minute_gradient = 1
-
-                        dl_bandwidth, ul_bandwidth = get_bandwidth_usage(stat_records)
-                        stat_records = condense_data_estimation(stat_records, minute_gradient)
-                        for record in stat_records:
-                            record['_id'] = str(record['_id'])
-                        self.finish(
-                                dict(status="success", stat_data=stat_records,
-                                     misc_data={'dl_bandwidth': dl_bandwidth, 'ul_bandwidth': ul_bandwidth}))
-
-        else:
+        if action is None:
             self.error_respond(400, "No action specified")
+            return
+        if action == "GET_COST_STATS":
+            if machine is not None:
+                stat_count, minutes_count = await get_uptime_percentage(machine)
+                self.finish({'duration': minutes_count, 'count': stat_count})
+            else:
+                self.error_respond(400, "No machine name specified.")
+        elif action == "FETCH_ESTIMATED_CHARTS":
+            if machine is None:
+                self.error_respond(400, "No machine name specified.")
+            elif days_duration is None:
+                self.error_respond(400, "Days duration not specified.")
+            else:
+                stat_records = await get_db()[stat_name(machine)].find().to_list(None)
+
+                if len(stat_records) < 5:
+                    self.finish(dict(status="failure", message="Not enough data"))
+                else:
+                    i = 0
+                    initial_delta_time = dateutil.parser.parse(
+                        stat_records[len(stat_records) - 1]['date']) - dateutil.parser.parse(
+                        stat_records[0]['date'])
+
+                    if int(get_delta_time_days(stat_records)) < int(days_duration):
+                        while int(get_delta_time_days(stat_records)) < int(days_duration):
+                            stat_records.append(stat_records[i].copy())
+                            cur_date = stat_records[len(stat_records) - 1]['date']
+                            cur_date = dateutil.parser.parse(cur_date)
+                            cur_date += initial_delta_time + datetime.timedelta(1, 60)
+                            stat_records[len(stat_records) - 1]['date'] = cur_date.isoformat()
+                            i += 1
+                    else:
+                        while int(get_delta_time_days(stat_records)) > int(days_duration):
+                            stat_records = stat_records[:-1]
+                        while int(get_delta_time_seconds(stat_records)) > 60:
+                            stat_records = stat_records[:-1]
+
+                    if int(len(stat_records) / 1000) > 0:
+                        minute_gradient = int(len(stat_records) / 1000)
+                    else:
+                        minute_gradient = 1
+
+                    dl_bandwidth, ul_bandwidth = get_bandwidth_usage(stat_records)
+                    stat_records = condense_data_estimation(stat_records, minute_gradient)
+                    for record in stat_records:
+                        record['_id'] = str(record['_id'])
+                    self.finish(
+                        dict(status="success", stat_data=stat_records,
+                             misc_data={'dl_bandwidth': dl_bandwidth, 'ul_bandwidth': ul_bandwidth}))
+        else:
+            self.error_respond(400, "Not a valid action")
+
+
+def make_compute_app():
+    return Application([(r"/compute", ComputeHandler)], **_app_settings())
 
 
 def start_compute_server(port):
-    sim_app = Application([(r"/compute", ComputeHandler)],
-                          autoreload=True)
-    server = HTTPServer(sim_app)
-    server.listen(port)
-    print "Observer Compute running at port " + port
-    tornado.ioloop.IOLoop.current().start()
+    asyncio.run(_serve_http(make_compute_app(), port, "Observer Compute"))
