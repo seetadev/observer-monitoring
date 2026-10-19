@@ -27,3 +27,26 @@ DEBUG = _flag("OBSERVER_DEBUG")
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 FONTS_DIR = os.path.join(BASE_DIR, "fonts")
 FILES_DIR = os.environ.get("OBSERVER_FILES_DIR", os.path.join(BASE_DIR, "files_buffer"))
+
+
+# --- Access control -------------------------------------------------------------------------------------------
+# "production" refuses to start without a valid admin credential and cookie secret, and uses Secure cookies.
+ENV = os.environ.get("OBSERVER_ENV", "development").strip().lower()
+
+# scrypt hash of the admin password. Generate with: python run.py hash-password
+ADMIN_PASSWORD_HASH = os.environ.get("OBSERVER_ADMIN_PASSWORD_HASH", "").strip()
+
+# Signs session cookies. Must be identical for every Observer process (dashboard, live, compute, simulator).
+COOKIE_SECRET = os.environ.get("OBSERVER_COOKIE_SECRET", "")
+
+# None = Secure cookies in production only; "1"/"0" forces the setting.
+_secure = os.environ.get("OBSERVER_COOKIE_SECURE")
+COOKIE_SECURE = None if _secure in (None, "") else _flag("OBSERVER_COOKIE_SECURE")
+
+SESSION_TTL_SECONDS = int(os.environ.get("OBSERVER_SESSION_TTL_SECONDS", str(8 * 3600)))
+
+# The dashboard origin(s) that may call the live/compute/simulator services from the browser.
+# Default: same host as the request, on the dashboard port.
+DASH_PORT = int(os.environ.get("OBSERVER_DASH_PORT", "9000"))
+ALLOWED_ORIGINS = [o.strip().rstrip("/") for o in os.environ.get("OBSERVER_ALLOWED_ORIGINS", "").split(",")
+                   if o.strip()]

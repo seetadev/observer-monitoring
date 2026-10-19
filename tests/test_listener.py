@@ -1,6 +1,8 @@
 import asyncio
 import json
 
+import pytest
+
 from tornado.testing import bind_unused_port
 
 import root
@@ -10,8 +12,10 @@ SPECS = {"machine": "m", "node": "n", "architecture": ["64bit", ""], "system": "
          "version": "v", "name": "box", "memory": 123}
 
 
-async def _send(port, lines):
+async def _send(port, lines, token=None):
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    if token is not None:
+        writer.write((json.dumps({"token": token}) + "\n").encode())
     for line in lines:
         writer.write((json.dumps(line) + "\n").encode())
     await writer.drain()
@@ -27,6 +31,12 @@ async def _wait_for(predicate, timeout=20):
     return False
 
 
+@pytest.fixture
+async def token(db):
+    import auth
+    return await auth.create_agent("box")
+
+
 async def _listener():
     sock, port = bind_unused_port()
     server = root.TCPListener()
@@ -34,10 +44,10 @@ async def _listener():
     return server, port
 
 
-async def test_specs_line_registers_the_machine(db):
+async def test_specs_line_registers_the_machine(db, token):
     server, port = await _listener()
     try:
-        await _send(port, [SPECS])
+        await _send(port, [SPECS], token)
         assert await _wait_for(lambda: db["machines"].find_one({"name": "box"}))
         machine = await db["machines"].find_one({"name": "box"})
         assert machine["ip"] == "127.0.0.1" and machine["memory"] == 123
@@ -45,10 +55,10 @@ async def test_specs_line_registers_the_machine(db):
         server.stop()
 
 
-async def test_stat_lines_are_stored_and_update_last_online(db):
+async def test_stat_lines_are_stored_and_update_last_online(db, token):
     server, port = await _listener()
     try:
-        await _send(port, [SPECS, make_stat()])
+        await _send(port, [SPECS, make_stat()], token)
         async def stored():
             return await db["[box]-live"].count_documents({}) == 1
         assert await _wait_for(stored)
@@ -58,10 +68,10 @@ async def test_stat_lines_are_stored_and_update_last_online(db):
         server.stop()
 
 
-async def test_live_buffer_is_condensed_into_one_minute_stat_records(db):
+async def test_live_buffer_is_condensed_into_one_minute_stat_records(db, token):
     server, port = await _listener()
     try:
-        await _send(port, [SPECS] + [make_stat(ram=float(i % 2) * 100) for i in range(121)])
+        await _send(port, [SPECS] + [make_stat(ram=float(i % 2) * 100) for i in range(121)], token)
         async def condensed():
             return await db["[box]-stat"].count_documents({}) == 1
         assert await _wait_for(condensed)

@@ -13,13 +13,33 @@ import pytest
 import pytest_asyncio
 from tornado.httpserver import HTTPServer
 from tornado.testing import bind_unused_port
+from tornado.web import create_signed_value
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import auth  # noqa: E402
 import config  # noqa: E402
 import db as db_module  # noqa: E402
 
 TEST_MONGO_URL = os.environ.get("TEST_MONGO_URL", "mongodb://127.0.0.1:27017")
+TEST_PASSWORD = "test-only passphrase 0000"
+TEST_SECRET = "0123456789abcdef" * 4
+_TEST_HASH = auth.hash_password(TEST_PASSWORD)
+
+
+@pytest.fixture(autouse=True)
+def security_config(monkeypatch):
+    """A known admin credential and cookie secret for every test; each test starts with a clean login limiter."""
+    for name, value in (("ENV", "development"), ("COOKIE_SECRET", TEST_SECRET), ("ADMIN_PASSWORD_HASH", _TEST_HASH),
+                        ("COOKIE_SECURE", None), ("SESSION_TTL_SECONDS", 3600), ("ALLOWED_ORIGINS", []),
+                        ("DASH_PORT", 9000)):
+        monkeypatch.setattr(config, name, value, raising=False)
+    auth.login_limiter.failures.clear()
+
+
+def session_cookie(clock=None):
+    value = create_signed_value(TEST_SECRET, auth.SESSION_COOKIE, "admin", clock=clock)
+    return auth.SESSION_COOKIE + "=" + value.decode()
 
 
 @pytest_asyncio.fixture
@@ -49,12 +69,23 @@ async def serve(db):
     servers = []
     clients = []
 
-    def start(app):
+    def start(app, login=True, xsrf=True):
+        """Client for `app`. By default it carries a valid admin session and XSRF token."""
         sock, port = bind_unused_port()
         server = HTTPServer(app)
         server.add_sockets([sock])
         servers.append(server)
         client = httpx.AsyncClient(base_url="http://127.0.0.1:%d" % port, timeout=30)
+        cookies = []
+        if xsrf:
+            token = uuid.uuid4().hex
+            cookies.append("_xsrf=" + token)
+            client.headers["X-XSRFToken"] = token
+        if login:
+            cookies.append(session_cookie())
+        if cookies:
+            client.headers["Cookie"] = "; ".join(cookies)
+        client.port = port
         clients.append(client)
         return client
 
@@ -69,6 +100,13 @@ async def serve(db):
 def dash(serve):
     import root
     return serve(root.make_dash_app())
+
+
+@pytest.fixture
+def anon_dash(serve):
+    """Dashboard client with an XSRF token but no session."""
+    import root
+    return serve(root.make_dash_app(), login=False)
 
 
 def make_stat(name="box", cpu=None, ram=50.0, **overrides):

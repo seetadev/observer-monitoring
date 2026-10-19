@@ -6,7 +6,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY config.py db.py root.py remote.py run.py uimodules.py ./
+COPY config.py db.py auth.py admin_cli.py root.py remote.py run.py uimodules.py ./
 COPY static ./static
 COPY templates ./templates
 COPY fonts ./fonts

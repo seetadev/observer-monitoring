@@ -28,11 +28,6 @@ async def test_static_files_are_served(dash):
     assert (await dash.get("/css/styles.css")).status_code == 200
 
 
-async def test_cors_header_is_present_on_api(dash):
-    response = await api(dash, action="GET_REMOTE_MACHINES")
-    assert response.headers["access-control-allow-origin"] == "*"
-
-
 async def test_missing_action_is_400(dash):
     response = await dash.post("/api", data={})
     assert response.status_code == 400
@@ -80,11 +75,6 @@ async def test_save_list_and_fetch_a_test(dash):
 async def test_save_test_with_missing_argument_reports_failure(dash):
     body = (await api(dash, action="SAVE_TEST", machine="box")).json()
     assert body["status"] == "failure"
-
-
-async def test_admin_login_checks_the_password(dash):
-    assert (await api(dash, action="LOGIN_ADMIN", password=root.ADMIN_PASSWORD)).json() == {"auth": "True"}
-    assert (await api(dash, action="LOGIN_ADMIN", password="definitely-wrong")).json() == {"auth": "False"}
 
 
 async def test_delete_machine_removes_machine_and_collections(dash, db):

@@ -3,27 +3,35 @@ import base64
 import calendar
 import datetime
 import json
+import logging
 import os
 import queue
 import threading
 import time
 
 import dateutil.parser
+import tornado.iostream
 import tornado.web
 import xlsxwriter
 from PIL import Image
 from tornado.httpserver import HTTPServer
 from tornado.iostream import StreamClosedError
 from tornado.tcpserver import TCPServer
-from tornado.web import Application, RequestHandler
+from tornado.web import Application
 
+import auth
 import config
 import uimodules
 from db import get_db, live_name, stat_name, tests_name
 
 __author__ = 'sdpatro'
 
-ADMIN_PASSWORD = "letmein"
+log = logging.getLogger('observer')
+
+MAX_LINE_BYTES = 64 * 1024
+AUTH_TIMEOUT_SECONDS = 10
+AGENT_RECHECK_SECONDS = 30
+
 
 # Scalar and vector metrics that are averaged when records are condensed.
 SCALAR_FIELDS = ('ram', 'disk_io_read', 'disk_io_write', 'disk_read_rate', 'disk_write_rate', 'bytes_recv',
@@ -65,20 +73,48 @@ def average_group(group):
 
 # The TCP listener endpoint for all remote senders.
 class TCPListener(TCPServer):
-    # A new remote machine connects here.
+    """Agents must send {"token": ...} first; unknown or wrong tokens are disconnected without being stored."""
+
     async def handle_stream(self, stream, address):
         ip = address[0]
         db = get_db()
-        print("New IP connected: " + ip, flush=True)
         try:
+            agent = await self.authenticate(stream)
+            if agent is None:
+                log.warning("Rejected agent connection from %s", ip)
+                return
+            print("New agent connected: " + agent + " (" + ip + ")", flush=True)
+            checked = time.monotonic()
             while True:
-                await self.insert_data(stream, db, ip)
+                data = await stream.read_until(b'\n', max_bytes=MAX_LINE_BYTES)
+                if time.monotonic() - checked >= AGENT_RECHECK_SECONDS:
+                    if not await auth.agent_exists(agent):
+                        log.warning("Agent %s was revoked; closing connection", agent)
+                        return
+                    checked = time.monotonic()
+                await self.store_record(data, db, ip, agent)
         except StreamClosedError:
             return
+        except (ValueError, KeyError, TypeError, asyncio.TimeoutError, tornado.iostream.UnsatisfiableReadError) as exc:
+            log.warning("Closing agent connection from %s: %s", ip, exc.__class__.__name__)
+        finally:
+            stream.close()
 
-    async def insert_data(self, stream, db, ip):
-        data = await stream.read_until(b'\n')
+    async def authenticate(self, stream):
+        line = await asyncio.wait_for(stream.read_until(b'\n', max_bytes=MAX_LINE_BYTES), AUTH_TIMEOUT_SECONDS)
+        try:
+            message = json.loads(line)
+        except ValueError:
+            return None
+        if not isinstance(message, dict):
+            return None
+        agent = await auth.find_agent(message.get('token'))
+        return agent['name'] if agent else None
+
+    async def store_record(self, data, db, ip, agent):
         data_json = json.loads(data)
+        if not isinstance(data_json, dict) or data_json.get('name') != agent:
+            raise ValueError("record does not belong to the authenticated agent")
 
         if 'node' in data_json:
             await update_machine(data_json, ip)
@@ -127,7 +163,9 @@ async def condense(stat_coll, live_coll):
 
 
 async def _serve_tcp(server, port, label):
+    auth.validate_config()
     await init_instance_pricing()
+    await auth.ensure_indexes()
     server.listen(int(port), address=config.BIND_ADDRESS)
     print(label + " running at port " + str(port), flush=True)
     await asyncio.Event().wait()
@@ -260,17 +298,30 @@ def get_excel_column(number):
     return result
 
 
-class ApiHandler(RequestHandler):
-    def set_default_headers(self):
-        self.set_header("Access-Control-Allow-Origin", "*")
+class ApiHandler(auth.ApiBase):
+    def requires_auth(self):
+        return self.get_argument("action", None) not in ("LOGIN_ADMIN", "LOGOUT_ADMIN")
 
-    def error_respond(self, code, msg):
-        self.set_status(code)
-        self.write(json.dumps({
-            'status': code,
-            'message': msg
-        }))
-        self.finish()
+    async def login(self):
+        password = self.get_argument("password", "")
+        key = self.request.remote_ip
+        if auth.login_limiter.blocked(key):
+            self.set_header("Retry-After", str(auth.login_limiter.window))
+            self.finish_login(429, "Too many failed attempts. Try again later.")
+            return
+        stored = config.ADMIN_PASSWORD_HASH
+        ok = bool(stored) and await asyncio.to_thread(auth.verify_password, password, stored)
+        if not ok:
+            auth.login_limiter.record_failure(key)
+            self.finish_login(401, "Invalid credentials.")
+            return
+        auth.login_limiter.reset(key)
+        self.start_session()
+        self.finish(dict(auth="True"))
+
+    def finish_login(self, status, message):
+        self.set_status(status)
+        self.finish(dict(auth="False", message=message))
 
     async def post(self):
         if self.get_argument("action", None) is None:
@@ -365,14 +416,11 @@ class ApiHandler(RequestHandler):
                 self.error_respond(500, "Something went wrong: " + str(e))
 
         elif action == "LOGIN_ADMIN":
-            password = self.get_argument("password")
-            try:
-                if password == ADMIN_PASSWORD:
-                    self.finish(dict(auth="True"))
-                else:
-                    self.finish(dict(auth="False"))
-            except Exception as e:
-                self.error_respond(500, "Something went wrong: " + str(e))
+            await self.login()
+
+        elif action == "LOGOUT_ADMIN":
+            self.end_session()
+            self.finish(dict(auth="False"))
 
         elif action == "DELETE_REMOTE_MACHINE":
             machine_name = self.get_argument("machine_id")
@@ -445,71 +493,63 @@ class ApiHandler(RequestHandler):
             self.error_respond(400, "Not a valid action")
 
 
-class LiveHandler(RequestHandler):
+class LiveHandler(auth.PageHandler):
+    @tornado.web.authenticated
     def get(self):
         self.render("templates/live.html")
 
 
-class StatHandler(RequestHandler):
+class StatHandler(auth.PageHandler):
+    @tornado.web.authenticated
     def get(self):
         self.render("templates/stat.html")
 
 
-class PerfHandler(RequestHandler):
+class PerfHandler(auth.PageHandler):
+    @tornado.web.authenticated
     def get(self):
         self.render("templates/perf.html")
 
 
-class TestHandler(RequestHandler):
-    def post(self):
-        pass
-
-
-class XLSXHandler(RequestHandler):
-    def post(self):
-        pass
-
-    def get(self):
-        request_url = self.request.uri
-        self.write(request_url)
-
-
-class CostHandler(RequestHandler):
-    def post(self):
-        pass
-
+class CostHandler(auth.PageHandler):
+    @tornado.web.authenticated
     def get(self):
         self.render("templates/cost.html")
 
 
-class AdminHandler(RequestHandler):
-    def post(self):
-        pass
-
+class AdminHandler(auth.PageHandler):
+    @tornado.web.authenticated
     def get(self):
         self.render("templates/admin.html")
 
 
+class LoginHandler(auth.PageHandler):
+    def get(self):
+        self.render("templates/login.html", next_url=auth.safe_next(self.get_argument("next", None)))
+
+
 def _app_settings(**extra):
-    return dict(template_path=config.BASE_DIR, autoreload=config.DEBUG, **extra)
+    return auth.app_settings(**extra)
 
 
 def make_dash_app():
     os.makedirs(config.FILES_DIR, exist_ok=True)
-    return Application([(r"/api", ApiHandler),
+    return Application([(r"/", tornado.web.RedirectHandler, {"url": "/live"}),
+                        (r"/api", ApiHandler),
+                        (r"/login", LoginHandler),
                         (r"/live", LiveHandler),
                         (r"/stat", StatHandler),
                         (r"/perf", PerfHandler),
                         (r"/cost", CostHandler),
-                        (r"/test", TestHandler),
                         (r"/admin", AdminHandler),
-                        (r"/files/(.*)", tornado.web.StaticFileHandler, {"path": config.FILES_DIR}),
+                        (r"/files/(.*)", auth.AuthenticatedStaticFileHandler, {"path": config.FILES_DIR}),
                         (r"/fonts/(.*)", tornado.web.StaticFileHandler, {"path": config.FONTS_DIR}),
                         (r"/(.*)", tornado.web.StaticFileHandler, {"path": config.STATIC_DIR})],
                        **_app_settings(ui_modules=uimodules))
 
 
 async def _serve_http(app, port, label):
+    auth.validate_config()
     await init_instance_pricing()
     server = HTTPServer(app)
     server.listen(int(port), address=config.BIND_ADDRESS)
@@ -573,18 +613,7 @@ def _run_test_instances(test_code, test_name, machine_name, instances_count):
     return status, test_error_msg, test_output
 
 
-class SimHandler(RequestHandler):
-    def error_respond(self, code, msg):
-        self.set_status(code)
-        self.write(json.dumps({
-            'status': code,
-            'message': msg
-        }))
-        self.finish()
-
-    def set_default_headers(self):
-        self.set_header("Access-Control-Allow-Origin", "*")
-
+class SimHandler(auth.ApiBase):
     async def post(self):
         action = self.get_argument("action", None)
         if action is None:
@@ -613,18 +642,7 @@ def start_sim_server(port):
 
 #####################################################
 
-class LiveMonitorHandler(RequestHandler):
-    def error_respond(self, code, msg):
-        self.set_status(code)
-        self.write(json.dumps({
-            'status': code,
-            'message': msg
-        }))
-        self.finish()
-
-    def set_default_headers(self):
-        self.set_header("Access-Control-Allow-Origin", "*")
-
+class LiveMonitorHandler(auth.ApiBase):
     async def get_live_data(self, client_name):
         record = await get_db()[live_name(client_name)].find_one(sort=[("_id", -1)])
         if record is not None:
@@ -707,18 +725,7 @@ def condense_data_estimation(stat_records, minute_gradient):
     return new_stat_records
 
 
-class ComputeHandler(RequestHandler):
-    def error_respond(self, code, msg):
-        self.set_status(code)
-        self.write(json.dumps({
-            'status': code,
-            'message': msg
-        }))
-        self.finish()
-
-    def set_default_headers(self):
-        self.set_header("Access-Control-Allow-Origin", "*")
-
+class ComputeHandler(auth.ApiBase):
     async def post(self):
         action = self.get_argument("action", None)
         machine = self.get_argument("machine", None)

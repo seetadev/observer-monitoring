@@ -1,6 +1,8 @@
 import asyncio
 import datetime
+import getpass
 import json
+import os
 import platform
 
 import psutil
@@ -81,7 +83,10 @@ async def run_remote():
     remote_name = input("Enter remote name: ")
     nic = input("Enter preferred NIC: ")
 
+    token = os.environ.get("OBSERVER_AGENT_TOKEN") or getpass.getpass("Enter agent token: ")
+
     stream = await TCPClient().connect(str(dest_ip), dest_port)
+    await stream.write((json.dumps({"token": token}) + '\n').encode('utf-8'))
     await stream.write((json.dumps(get_specs(remote_name)) + '\n').encode('utf-8'))
     await asyncio.sleep(1)
     while True:

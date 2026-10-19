@@ -1,12 +1,16 @@
 # observer-monitoring
 A monitoring tool for checking the status of local/remote servers, based on <a href="https://github.com/giampaolo/psutil">psutil</a>, <a href="https://github.com/tornadoweb/tornado">Tornado</a> and <a href="https://github.com/mongodb/mongo">MongoDB</a>.
 
-> **Status:** Python 3.12, Tornado 6.5, motor (async MongoDB driver) and MongoDB 7. The dashboard still has **no authentication yet**: keep the ports on loopback or a private network until the access-control changes land.
+> **Status:** Python 3.12, Tornado 6.5, motor (async MongoDB driver) and MongoDB 7. The dashboard and its APIs require an admin login; agents must present a token.
 
-## How-to-run
+## Access control
+
+* **Admin**: one account. Set `OBSERVER_ADMIN_PASSWORD_HASH` (create it with `python run.py hash-password`; minimum 12 characters) and `OBSERVER_COOKIE_SECRET` (`openssl rand -hex 32`, same value for every process). Production (`OBSERVER_ENV=production`, the Compose default) refuses to start without them. Sessions are signed, expiring, HttpOnly cookies and every state-changing request needs the XSRF token.
+* **Agents**: create one token per machine: `python run.py agent-add NAME` (Compose: `docker compose run --rm listener agent-add NAME`). The token is shown once and stored only as a digest. `agent-list` and `agent-revoke NAME` manage them. Unknown or wrong tokens are disconnected.
 
 ### Root server (Docker Compose)
 ```bash
+cp .env.example .env   # fill in OBSERVER_COOKIE_SECRET and OBSERVER_ADMIN_PASSWORD_HASH
 docker compose up -d --build
 ```
 Starts MongoDB 7 plus the five Observer processes (TCP listener `8889`, dashboard `9000`, simulator `9001`, live `9002`, compute `9003`). Ports are published on `127.0.0.1` only (`OBSERVER_PUBLISH_HOST` overrides).
@@ -18,7 +22,7 @@ python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
 bash run-root.sh
 ```
 
-Configuration (environment variables): `OBSERVER_MONGO_URL`, `OBSERVER_DB_NAME`, `OBSERVER_BIND` (bind address, default `127.0.0.1`), `OBSERVER_DEBUG`, `OBSERVER_FILES_DIR`.
+Configuration (environment variables): `OBSERVER_MONGO_URL`, `OBSERVER_DB_NAME`, `OBSERVER_BIND` (bind address, default `127.0.0.1`), `OBSERVER_DEBUG`, `OBSERVER_FILES_DIR`, and the access-control variables listed in `.env.example`.
 
 ### Remote senders
 Run on each machine you want to monitor (Linux; Python 3.12 with `psutil` and `tornado`):
@@ -34,6 +38,7 @@ foobar-production
 Enter preferred NIC: 
 eth0
 ```
+The agent token is read from `OBSERVER_AGENT_TOKEN` (or prompted for). The remote name must match the name the token was created for.
 ## Tests
 
 ```bash
