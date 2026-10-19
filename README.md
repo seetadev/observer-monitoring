@@ -34,6 +34,16 @@ foobar-production
 Enter preferred NIC: 
 eth0
 ```
+## Tests
+
+```bash
+.venv/bin/pip install -r requirements-dev.txt
+docker run -d --name observer-test-mongo -p 127.0.0.1:27018:27017 mongo:7
+TEST_MONGO_URL=mongodb://127.0.0.1:27018 .venv/bin/pytest -q -rx
+.venv/bin/ruff check .
+```
+Each test uses its own throw-away database (`observer_test_*`), dropped afterwards. Tests marked `xfail(strict=True)` document known defects; the pull request that fixes a defect removes its marker.
+
 ### Dashboard navigation
 + **Live monitoring** : [ROOT_IP_ADDRESS]:9000/live
 + **Statistical data** : [ROOT_IP_ADDRESS]:9000/stats
