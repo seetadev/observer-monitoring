@@ -19,9 +19,10 @@ from tornado.web import Application
 
 import auth
 import config
+import db
 import uimodules
 import validation
-from db import get_db, live_name, stat_name
+from db import ensure_machine_indexes, forget_machine, get_db, live_name, stat_name
 
 __author__ = 'sdpatro'
 
@@ -129,6 +130,8 @@ class TCPListener(TCPServer):
 
             await update_machine_time(data_json["name"])
 
+            await ensure_machine_indexes(data_json['name'])
+            data_json['ts'] = datetime.datetime.now(datetime.timezone.utc)
             await live_coll.insert_one(data_json)
             await condense(stat_coll, live_coll)
 
@@ -139,7 +142,7 @@ async def update_machine(json_data, machine_ip):
     machine = await machines.find_one({'name': machine_name})
     if machine is None:
         await machines.insert_one(
-            {'name': machine_name, 'ip': machine_ip, 'last_online': str(datetime.datetime.now().isoformat()),
+            {'name': machine_name, 'ip': machine_ip, 'last_online': str(calendar.timegm(time.gmtime())),
              'machine': json_data['machine'], 'node': json_data['node'], 'architecture': json_data['architecture'],
              'system': json_data['system'], 'release': json_data['release'], 'version': json_data['release'],
              'memory': json_data['memory']})
@@ -160,6 +163,7 @@ async def condense(stat_coll, live_coll):
         stat = average_group(live_data)
         stat['date'] = str(datetime.datetime.now().isoformat())
         stat['name'] = live_data[-1]['name']
+        stat['ts'] = datetime.datetime.now(datetime.timezone.utc)
 
         await live_coll.delete_many({'_id': {'$in': [record['_id'] for record in live_data]}})
         print("Condensing...", flush=True)
@@ -169,7 +173,7 @@ async def condense(stat_coll, live_coll):
 async def _serve_tcp(server, port, label):
     auth.validate_config()
     await init_instance_pricing()
-    await auth.ensure_indexes()
+    await db.ensure_indexes()
     server.listen(int(port), address=config.BIND_ADDRESS)
     print(label + " running at port " + str(port), flush=True)
     await asyncio.Event().wait()
@@ -295,6 +299,9 @@ class ApiHandler(auth.ApiBase):
                 self.error_respond(400, "Provider name not provided.")
             else:
                 instance_pricing = await db["cloud-pricing"].find_one({'name': provider_name})
+                if instance_pricing is None:
+                    self.error_respond(404, "Unknown provider.")
+                    return
                 instance_pricing['_id'] = str(instance_pricing['_id'])
                 self.finish(dict(response_data=json.dumps(instance_pricing)))
 
@@ -306,6 +313,9 @@ class ApiHandler(auth.ApiBase):
                 self.error_respond(400, "Invalid machine name.")
             else:
                 machine = await db["machines"].find_one({'name': machine_name})
+                if machine is None:
+                    self.error_respond(404, "Unknown machine.")
+                    return
                 self.finish({'machine': machine['machine'], 'node': machine['node'], 'version': machine['version'],
                              'release': machine['release'], 'system': machine['system'],
                              'architecture': machine['architecture'], 'memory': machine['memory']})
@@ -313,7 +323,7 @@ class ApiHandler(auth.ApiBase):
         elif action == "GET_STAT_DATA":
             client_name = self.machine_name("client-name")
             stat_data = []
-            async for record in db[stat_name(client_name)].find():
+            async for record in db[stat_name(client_name)].find().sort('_id', 1):
                 record['_id'] = str(record['_id'])
                 stat_data.append(record)
 
@@ -345,6 +355,7 @@ class ApiHandler(auth.ApiBase):
                 await db[live_name(machine_name)].drop()
                 await db[stat_name(machine_name)].drop()
                 await db["machines"].delete_many({"name": machine_name})
+                forget_machine(machine_name)
                 self.finish(dict(status="True"))
             except Exception as e:
                 self.error_respond(500, "Something went wrong: " + str(e))
@@ -414,6 +425,7 @@ def make_dash_app():
 async def _serve_http(app, port, label):
     auth.validate_config()
     await init_instance_pricing()
+    await db.ensure_indexes()
     server = HTTPServer(app)
     server.listen(int(port), address=config.BIND_ADDRESS)
     print(label + " running at port " + str(port), flush=True)
@@ -474,6 +486,8 @@ async def get_uptime_percentage(machine):
 
     newest_stat_record = await stat_coll.find().sort("date", -1).limit(1).to_list(1)
     oldest_stat_record = await stat_coll.find().sort("date", 1).limit(1).to_list(1)
+    if not newest_stat_record:
+        return 0, 0
 
     old_timestamp = dateutil.parser.parse(oldest_stat_record[0]["date"])
     new_timestamp = dateutil.parser.parse(newest_stat_record[0]["date"])
@@ -497,8 +511,9 @@ def get_bandwidth_usage(records):
 
 
 def condense_data_estimation(stat_records, minute_gradient):
+    """Average consecutive groups of `minute_gradient` records; a shorter final group is averaged as it is."""
     new_stat_records = []
-    while len(stat_records) > minute_gradient:
+    while stat_records:
         group = stat_records[:minute_gradient]
         temp_record = dict(group[0])
         temp_record['name'] = group[-1]['name']
@@ -529,7 +544,7 @@ class ComputeHandler(auth.ApiBase):
             elif days_duration is None:
                 self.error_respond(400, "Days duration not specified.")
             else:
-                stat_records = await get_db()[stat_name(machine)].find().to_list(None)
+                stat_records = await get_db()[stat_name(machine)].find().sort('_id', 1).to_list(None)
 
                 if len(stat_records) < 5:
                     self.finish(dict(status="failure", message="Not enough data"))

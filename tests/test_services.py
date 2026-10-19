@@ -1,4 +1,3 @@
-import pytest
 
 import root
 from tests.conftest import make_stat
@@ -23,11 +22,10 @@ async def test_compute_cost_stats(serve, db):
     assert body == {"duration": 60.0, "count": 2}
 
 
-@pytest.mark.xfail(strict=True, reason="no stat data currently produces HTTP 500")
-async def test_compute_cost_stats_without_data_is_not_a_server_error(serve):
+async def test_compute_cost_stats_without_data_is_empty_not_an_error(serve):
     client = serve(root.make_compute_app())
     response = await client.post("/compute", data={"action": "GET_COST_STATS", "machine": "ghost"})
-    assert response.status_code < 500
+    assert response.status_code == 200 and response.json() == {"duration": 0, "count": 0}
 
 
 async def test_estimated_charts_need_enough_data(serve, db):

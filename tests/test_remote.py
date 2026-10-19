@@ -33,7 +33,6 @@ def test_first_sample_has_zero_network_and_read_rates():
     assert stats["dl_rate"] == 0 and stats["ul_rate"] == 0 and stats["disk_read_rate"] == 0
 
 
-@pytest.mark.xfail(strict=True, reason="typo: the write-rate guard tests prev_read, not prev_write")
 def test_first_sample_has_zero_disk_write_rate():
     assert remote.get_stats("box", _nic())["disk_write_rate"] == 0
 

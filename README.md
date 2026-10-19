@@ -1,7 +1,7 @@
 # observer-monitoring
 A monitoring tool for checking the status of local/remote servers, based on <a href="https://github.com/giampaolo/psutil">psutil</a>, <a href="https://github.com/tornadoweb/tornado">Tornado</a> and <a href="https://github.com/mongodb/mongo">MongoDB</a>.
 
-> **Status:** Python 3.12, Tornado 6.5, motor (async MongoDB driver) and MongoDB 7. The dashboard and its APIs require an admin login; agents must present a token.
+> **Status:** Python 3.12, Tornado 6.5, PyMongo's native async client and MongoDB 7. The dashboard and its APIs require an admin login; agents must present a token.
 
 ## Access control
 
@@ -22,7 +22,7 @@ python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
 bash run-root.sh
 ```
 
-Configuration (environment variables): `OBSERVER_MONGO_URL`, `OBSERVER_DB_NAME`, `OBSERVER_BIND` (bind address, default `127.0.0.1`), `OBSERVER_DEBUG`, `OBSERVER_FILES_DIR`, and the access-control variables listed in `.env.example`.
+Configuration (environment variables): `OBSERVER_MONGO_URL`, `OBSERVER_DB_NAME`, `OBSERVER_BIND` (bind address, default `127.0.0.1`), `OBSERVER_DEBUG`, `OBSERVER_FILES_DIR`, `OBSERVER_LIVE_TTL_SECONDS` (default 3600: removes a raw-sample buffer left behind by a stopped agent), `OBSERVER_STAT_RETENTION_DAYS` (default 0 = keep 1-minute statistics forever), and the access-control variables listed in `.env.example`.
 
 ### Remote senders
 Run on each machine you want to monitor (Linux; Python 3.12 with `psutil` and `tornado`):

@@ -18,6 +18,11 @@ def _flag(name, default=False):
 MONGO_URL = os.environ.get("OBSERVER_MONGO_URL", "mongodb://127.0.0.1:27017")
 DB_NAME = os.environ.get("OBSERVER_DB_NAME", "observerdb")
 
+# Retention. Live samples are 1-second raw data that are condensed into 1-minute statistics; a TTL removes a
+# buffer that was left behind by an agent that stopped. Statistics are kept forever unless a retention is set.
+LIVE_TTL_SECONDS = int(os.environ.get("OBSERVER_LIVE_TTL_SECONDS", "3600"))
+STAT_RETENTION_DAYS = int(os.environ.get("OBSERVER_STAT_RETENTION_DAYS", "0"))
+
 # Address the HTTP and TCP servers bind to. Loopback by default; the Docker image sets 0.0.0.0.
 BIND_ADDRESS = os.environ.get("OBSERVER_BIND", "127.0.0.1")
 

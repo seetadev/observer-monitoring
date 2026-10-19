@@ -62,7 +62,7 @@ def get_stats(name, nic):
         stats['disk_read_rate'] = 0
     prev_read = stats['disk_io_read']
 
-    if prev_read != -1:
+    if prev_write != -1:
         stats['disk_write_rate'] = stats['disk_io_write'] - prev_write
     else:
         stats['disk_write_rate'] = 0

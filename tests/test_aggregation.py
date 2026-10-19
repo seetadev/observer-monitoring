@@ -1,5 +1,3 @@
-import pytest
-
 import root
 from tests.conftest import make_stat
 
@@ -15,8 +13,8 @@ def test_average_group_averages_scalars_and_vectors():
 def test_condense_data_estimation_groups_by_gradient():
     records = [make_stat(ram=float(v)) for v in (10, 20, 30, 40, 50)]
     out = root.condense_data_estimation(records, 2)
-    # 5 records, gradient 2: two full groups; the trailing record cannot form a group
-    assert [r["ram"] for r in out] == [15.0, 35.0]
+    # 5 records, gradient 2: two full groups and the shorter final group are all kept
+    assert [r["ram"] for r in out] == [15.0, 35.0, 50.0]
 
 
 def test_condense_data_estimation_keeps_first_record_metadata():
@@ -27,13 +25,11 @@ def test_condense_data_estimation_keeps_first_record_metadata():
     assert out[0]["name"] == "b"
 
 
-@pytest.mark.xfail(strict=True, reason="off-by-one: the last window is dropped, so one record yields none")
 def test_condense_data_estimation_single_record_is_kept():
     out = root.condense_data_estimation([make_stat(ram=42.0)], 1)
     assert [r["ram"] for r in out] == [42.0]
 
 
-@pytest.mark.xfail(strict=True, reason="off-by-one: the last window is dropped")
 def test_condense_data_estimation_keeps_last_record_at_gradient_one():
     records = [make_stat(ram=float(v)) for v in (1, 2, 3)]
     assert len(root.condense_data_estimation(records, 1)) == 3

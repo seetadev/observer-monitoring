@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 import tornado.web
 
 import config
+import db as db_module
 from db import get_db
 
 SESSION_COOKIE = "observer_session"
@@ -255,18 +256,12 @@ def token_digest(token):
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-async def ensure_indexes():
-    agents = get_db()["agents"]
-    await agents.create_index("token_sha256", unique=True)
-    await agents.create_index("name", unique=True)
-
-
 async def create_agent(name):
     """Register an agent and return its token. The token is not stored, only its digest."""
     if not NAME_PATTERN.match(name):
         raise ValueError("agent name must be 1-64 characters: letters, digits, dot, underscore or hyphen, "
                          "starting with a letter or digit")
-    await ensure_indexes()
+    await db_module.ensure_indexes()
     token = secrets.token_urlsafe(32)
     try:
         await get_db()["agents"].insert_one({"name": name, "token_sha256": token_digest(token),

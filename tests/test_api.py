@@ -51,7 +51,6 @@ async def test_get_specs(dash, db):
     assert body["system"] == "Linux" and body["memory"] == 1
 
 
-@pytest.mark.xfail(strict=True, reason="an unknown machine currently produces HTTP 500")
 async def test_get_specs_unknown_machine_is_a_client_error(dash):
     assert (await api(dash, action="GET_SPECS", machine_name="ghost")).status_code == 404
 
@@ -76,10 +75,9 @@ async def test_delete_machine_removes_machine_and_collections(dash, db):
 async def test_stat_data_is_condensed_for_the_chart(dash, db):
     await db["[box]-stat"].insert_many([make_stat(ram=float(i)) for i in range(3)])
     body = (await api(dash, action="GET_STAT_DATA", **{"client-name": "box"})).json()
-    assert [r["ram"] for r in body["stat_data"]] == [0.0, 1.0]  # last window dropped (see xfail below)
+    assert [r["ram"] for r in body["stat_data"]] == [0.0, 1.0, 2.0]
 
 
-@pytest.mark.xfail(strict=True, reason="a single stat record is returned as an empty list")
 async def test_stat_data_with_one_record_is_not_empty(dash, db):
     await db["[box]-stat"].insert_one(make_stat())
     body = (await api(dash, action="GET_STAT_DATA", **{"client-name": "box"})).json()

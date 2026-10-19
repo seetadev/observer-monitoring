@@ -80,7 +80,7 @@ function fetchUtilization(machineName){
 }
 
 function setCurrentUtilization(duration,count){
-    _usagePercentage = Math.round((count/duration)*100,2);
+    _usagePercentage = duration > 0 ? Math.round((count/duration)*100,2) : 0;
     $("#usage-perc").html("<b>"+count.toString()+"</b> (minutes) out of <b>"+duration.toString()+"</b> (minutes): "+_usagePercentage+"%");
 }
 

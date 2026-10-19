@@ -48,13 +48,13 @@ async def db(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "MONGO_URL", TEST_MONGO_URL)
     monkeypatch.setattr(config, "DB_NAME", name)
     monkeypatch.setattr(config, "FILES_DIR", str(tmp_path / "files_buffer"))
-    db_module.close_db()
+    await db_module.close_db()
     database = db_module.get_db()
     assert database.name.startswith("observer_test_")
     yield database
     assert database.name.startswith("observer_test_")
-    await database.client.drop_database(database.name)
-    db_module.close_db()
+    await db_module.get_db().client.drop_database(database.name)  # current client: a test may have reopened it
+    await db_module.close_db()
 
 
 class Server:
