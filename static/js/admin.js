@@ -1,30 +1,7 @@
 
-function submitPassword(){
-    _password = $("#password-field").val();
-
-    data = {'password':_password,'action':'LOGIN_ADMIN'};
-    $.ajax({
-        'data':data,
-        'type' : 'post',
-        'url' : _apiEndPoint,
-        'success':function(response){
-                    if(response.auth == "True"){
-                        populateMachinesList();
-                        return false;
-                    }
-                    else{
-                        alert("Wrong password. Try again.");
-                        return false;
-                    }
-                   },
-        'error':function(response){
-                    console.log(response);
-                  },
-        'data-type':'json'
-    });
-
-    return false;
-}
+$(document).ready(function(){
+    populateMachinesList();
+});
 
 function populateMachinesList(){
     $.ajax({

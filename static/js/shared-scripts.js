@@ -1,8 +1,29 @@
 $(document).ready(pageInit);
 
+// Every request carries the session cookie and, for non-GET requests, the XSRF token.
+$.ajaxSetup({
+    xhrFields: {withCredentials: true},
+    beforeSend: function(xhr, settings){
+        if(settings.type && settings.type.toUpperCase() !== "GET"){
+            var token = getCookie("_xsrf");
+            if(token) xhr.setRequestHeader("X-XSRFToken", token);
+        }
+    }
+});
+$(document).ajaxError(function(event, xhr){
+    if(xhr.status === 401 && window.location.pathname !== "/login"){
+        window.location = "/login?next=" + encodeURIComponent(window.location.pathname);
+    }
+});
+
+function logout(){
+    $.ajax({"type":"POST", "url":_apiEndPoint, "data":{action:"LOGOUT_ADMIN"},
+            "complete":function(){ window.location = "/login"; }});
+    return false;
+}
+
 _common = {"currentMachine":document.cookie};
 _apiEndPoint = "http://"+window.location.hostname+":9000/api";
-_simEndPoint = "http://"+window.location.hostname+":9001/sim";
 _liveEndPoint = "http://"+window.location.hostname+":9002/live";
 _filesEndPoint = "http://"+window.location.hostname+":9000/files";
 _computeEndPoint = "http://"+window.location.hostname+":9003/compute";
