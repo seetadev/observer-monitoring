@@ -63,20 +63,6 @@ async def test_instance_pricing(dash, db):
     assert {i["name"] for i in instances} >= {"t2.micro", "m4.large"}
 
 
-async def test_save_list_and_fetch_a_test(dash):
-    saved = (await api(dash, action="SAVE_TEST", machine="box", testName="t1", testCode="x = 1")).json()
-    assert saved["status"] == "success"
-    listed = (await api(dash, action="FETCH_TESTS_LIST", machine="box")).json()
-    assert json.loads(listed["response_data"])["tests"] == [{"name": "t1", "machine": "box"}]
-    fetched = (await api(dash, action="FETCH_TEST", machine="box", test_name="t1")).json()
-    assert json.loads(fetched["response_data"])["script"] == "x = 1"
-
-
-async def test_save_test_with_missing_argument_reports_failure(dash):
-    body = (await api(dash, action="SAVE_TEST", machine="box")).json()
-    assert body["status"] == "failure"
-
-
 async def test_delete_machine_removes_machine_and_collections(dash, db):
     await add_machine(db)
     await db["[box]-live"].insert_one(make_stat())

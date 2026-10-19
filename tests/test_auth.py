@@ -120,8 +120,8 @@ async def test_next_parameter_cannot_redirect_off_site(anon_dash):
 
 # --- API requires a session --------------------------------------------------------------------------------------
 
-DASH_ACTIONS = ["GET_REMOTE_MACHINES", "GET_SPECS", "GET_STAT_DATA", "FETCH_INSTANCE_PRICING", "SAVE_TEST",
-                "FETCH_TESTS_LIST", "FETCH_TEST", "DELETE_REMOTE_MACHINE", "SAVE_TEST_RESULT_AS", "BOGUS"]
+DASH_ACTIONS = ["GET_REMOTE_MACHINES", "GET_SPECS", "GET_STAT_DATA", "FETCH_INSTANCE_PRICING",
+                "DELETE_REMOTE_MACHINE", "SAVE_TEST_RESULT_AS", "BOGUS"]
 
 
 @pytest.mark.parametrize("action", DASH_ACTIONS)
@@ -138,15 +138,9 @@ async def test_unauthenticated_delete_does_nothing(anon_dash, db):
     assert await db["[box]-stat"].count_documents({}) == 1
 
 
-async def test_unauthenticated_save_test_stores_nothing(anon_dash, db):
-    await api(anon_dash, action="SAVE_TEST", machine="box", testName="t", testCode="x")
-    assert "[box]-tests" not in await db.list_collection_names()
-
-
 @pytest.mark.parametrize("make,path,data", [
     (root.make_live_app, "/live", {"action": "GET_LIVE_DATA", "client-name": "box"}),
     (root.make_compute_app, "/compute", {"action": "GET_COST_STATS", "machine": "box"}),
-    (root.make_sim_app, "/sim", {"action": "RUN_TEST"}),
 ])
 async def test_services_refuse_requests_without_a_session(serve, make, path, data):
     client = serve(make(), login=False)
@@ -237,8 +231,8 @@ async def test_post_with_mismatched_xsrf_token_is_forbidden(dash):
 
 
 async def test_state_changing_service_calls_also_need_the_token(serve):
-    client = serve(root.make_sim_app(), xsrf=False)
-    assert (await client.post("/sim", data={"action": "RUN_TEST"})).status_code == 403
+    client = serve(root.make_compute_app(), xsrf=False)
+    assert (await client.post("/compute", data={"action": "GET_COST_STATS"})).status_code == 403
 
 
 # --- CORS --------------------------------------------------------------------------------------------------------

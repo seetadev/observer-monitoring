@@ -1,12 +1,9 @@
 import asyncio
-import base64
 import calendar
 import datetime
 import json
 import logging
 import os
-import queue
-import threading
 import time
 
 import dateutil.parser
@@ -22,7 +19,7 @@ from tornado.web import Application
 import auth
 import config
 import uimodules
-from db import get_db, live_name, stat_name, tests_name
+from db import get_db, live_name, stat_name
 
 __author__ = 'sdpatro'
 
@@ -179,110 +176,6 @@ def start_listener(port):
 ########################################################################
 
 
-class ObserverDriver:
-    def __init__(self, driver, test_name, machine_name):
-        self.web_driver = driver
-        self.test_name = test_name
-        self.machine_name = machine_name
-        self.steps = []
-        self.snaps = []
-
-    def _wait_for_load(self, wait_till_loaded=None):
-        while self.web_driver.execute_script('return document.readyState;') != 'complete':
-            time.sleep(0.05)
-        if wait_till_loaded is not None:
-            while not self.web_driver.execute_script('return ' + wait_till_loaded + ';'):
-                time.sleep(0.05)
-
-    def set_web_driver(self, driver):
-        self.web_driver = driver
-
-    def set_dimensions(self, height, width):
-        self.web_driver.set_window_size(height, width)
-
-    def snap(self, height=None, width=None, ):
-        snap_date = str(datetime.datetime.now().isoformat())
-        self.web_driver.set_window_position(0, 0)
-        if height is not None and width is not None:
-            self.web_driver.set_window_size(height, width)
-        snap_name = "files_buffer/" + self.machine_name + "_" + self.test_name + "_" + snap_date + ".jpg"
-        self.web_driver.save_screenshot(snap_name)
-        with open(snap_name, "rb") as image_file:
-            encoded_string = base64.b64encode(image_file.read()).decode('ascii')
-            self.snaps.append({'snap_name': snap_name, 'snap_content': encoded_string})
-
-    def go_to(self, url, record=False, wait_till_loaded=None):
-        start_time = datetime.datetime.now()
-        self.web_driver.get(url)
-        self._wait_for_load(wait_till_loaded)
-        end_time = datetime.datetime.now()
-        self.steps.append(
-            dict(action="go_to", target=url, startTime=start_time.isoformat(), endTime=end_time.isoformat(),
-                 record=record))
-
-    def button_click_id(self, button_id, record=False, wait_till_loaded=None):
-        from selenium.webdriver.common.by import By
-        start_time = datetime.datetime.now()
-        self.web_driver.find_element(By.ID, str(button_id)).click()
-        self._wait_for_load(wait_till_loaded)
-        end_time = datetime.datetime.now()
-        self.steps.append(
-            dict(action="button_click", target=button_id, startTime=start_time.isoformat(),
-                 endTime=end_time.isoformat(), record=record))
-
-    def button_click_class(self, class_name, btn_index, record=False, wait_till_loaded=None):
-        from selenium.webdriver.common.by import By
-        start_time = datetime.datetime.now()
-        btn_list = self.web_driver.find_elements(By.CLASS_NAME, class_name)
-        btn_list[btn_index].click()
-        self._wait_for_load(wait_till_loaded)
-        end_time = datetime.datetime.now()
-        self.steps.append(
-            dict(action="button_click", target=class_name + " " + str(btn_index), startTime=start_time.isoformat(),
-                 endTime=end_time.isoformat(), record=record))
-
-    def submit_form(self, form_element_id, record=False, wait_till_loaded=None):
-        from selenium.webdriver.common.by import By
-        start_time = datetime.datetime.now()
-        self.web_driver.find_element(By.ID, form_element_id).submit()
-        self._wait_for_load(wait_till_loaded)
-        end_time = datetime.datetime.now()
-        self.steps.append(
-            dict(action="form_submit", target=form_element_id, startTime=start_time.isoformat(),
-                 endTime=end_time.isoformat(), record=record))
-
-    def fill_form_element(self, form_element_id, input_text, record=False):
-        from selenium.webdriver.common.by import By
-        start_time = datetime.datetime.now()
-        self.web_driver.find_element(By.ID, form_element_id).send_keys(input_text)
-        self._wait_for_load()
-        end_time = datetime.datetime.now()
-        self.steps.append(
-            dict(action="fill_form_element", target=form_element_id, startTime=start_time.isoformat(),
-                 endTime=end_time.isoformat(), record=record))
-
-    def close_driver(self):
-        self._wait_for_load()
-        self.web_driver.close()
-        self.web_driver.quit()
-
-    def check_element(self, element_id):
-        from selenium.common.exceptions import NoSuchElementException
-        from selenium.webdriver.common.by import By
-        self._wait_for_load()
-        try:
-            self.web_driver.find_element(By.ID, element_id)
-        except NoSuchElementException:
-            return False
-        return True
-
-    def get_steps(self):
-        return self.steps
-
-    def get_snaps(self):
-        return self.snaps
-
-
 def get_excel_column(number):
     char_list = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
                  'U', 'V', 'W', 'X', 'Y', 'Z']
@@ -370,50 +263,6 @@ class ApiHandler(auth.ApiBase):
                 remote_machines_list.append({'name': remote_machine['name'], 'ip': remote_machine['ip'],
                                              'last_online': remote_machine['last_online']})
             self.finish((dict(remoteMachines=json.dumps({'machines': remote_machines_list}))))
-
-        elif action == "SAVE_TEST":
-            test_code = self.get_argument("testCode", None)
-            test_name = self.get_argument("testName", None)
-            machine_name = self.get_argument("machine", None)
-
-            if test_code is None or test_name is None or machine_name is None:
-                self.finish((dict(status="failure", output="Missing argument in request")))
-                return
-
-            try:
-                test_object = {'machine': machine_name, 'script': test_code, 'name': test_name}
-                await db[tests_name(machine_name)].insert_one(test_object)
-                status = "success"
-                output = test_name + " for " + machine_name + " successfully saved."
-            except Exception as e:
-                output = str(e)
-                status = "failure"
-            self.finish((dict(status=status, output=output)))
-
-        elif action == "FETCH_TESTS_LIST":
-            machine_name = self.get_argument("machine", None)
-            if machine_name is None:
-                self.error_respond(400, "Arguments missing")
-                return
-            try:
-                response_object = []
-                async for test in db[tests_name(machine_name)].find():
-                    response_object.append({'name': test['name'], 'machine': test['machine']})
-                self.finish(dict(response_data=json.dumps({'tests': response_object})))
-            except Exception as e:
-                self.error_respond(500, "Something went wrong: " + str(e))
-
-        elif action == "FETCH_TEST":
-            machine_name = self.get_argument("machine", None)
-            test_name = self.get_argument("test_name", None)
-            if machine_name is None or test_name is None:
-                self.error_respond(400, "Arguments missing")
-                return
-            test = await db[tests_name(machine_name)].find_one({"name": test_name})
-            try:
-                self.finish(dict(response_data=json.dumps({'script': test['script']})))
-            except Exception as e:
-                self.error_respond(500, "Something went wrong: " + str(e))
 
         elif action == "LOGIN_ADMIN":
             await self.login()
@@ -559,85 +408,6 @@ async def _serve_http(app, port, label):
 
 def start_dash_server(port):
     asyncio.run(_serve_http(make_dash_app(), port, "Observer Dashboard"))
-
-
-##############################################################
-
-
-def runTests(test_code, test_name, machine_name, output_queue, test_error_queue):
-    from selenium import webdriver
-    driver = ObserverDriver(webdriver.Chrome(), test_name, machine_name)
-    try:
-        scope = dict(globals())
-        scope.update(driver=driver, test_name=test_name, machine_name=machine_name)
-        exec(test_code, scope)
-    except Exception as e:
-        test_error_queue.put(str(e))
-
-    driver.close_driver()
-    test_output = {'steps': driver.get_steps(), 'snaps': driver.get_snaps()}
-    output_queue.put(test_output)
-
-
-def _run_test_instances(test_code, test_name, machine_name, instances_count):
-    status = "success"
-    queue_list = []
-    test_error_queue = queue.Queue()
-    try:
-        thread_instances = []
-        for i in range(0, instances_count):
-            queue_list.append(queue.Queue())
-            thread_instances.append(
-                threading.Thread(target=runTests,
-                                 args=(test_code, test_name, machine_name, queue_list[i], test_error_queue)))
-            thread_instances[i].start()
-        for thread in thread_instances:
-            thread.join()
-    except Exception:
-        status = "failure"
-
-    test_error_msg = None
-    while not test_error_queue.empty():
-        test_error_msg = test_error_queue.get()
-
-    if test_error_msg:
-        status = "failure"
-
-    test_output = []
-    if status == "success":
-        for q in queue_list:
-            test_output_unit_list = []
-            while not q.empty():
-                test_output_unit_list.append(q.get())
-            test_output.append(test_output_unit_list)
-    return status, test_error_msg, test_output
-
-
-class SimHandler(auth.ApiBase):
-    async def post(self):
-        action = self.get_argument("action", None)
-        if action is None:
-            self.error_respond(400, "No action specified")
-            return
-        if action == "RUN_TEST":
-            test_name = self.get_argument("testName", None)
-            machine_name = self.get_argument("machineName", None)
-            test_code = self.get_argument("testCode", None)
-            instances_count = int(self.get_argument("instancesCount", None))
-            status, test_error_msg, test_output = await asyncio.to_thread(
-                _run_test_instances, test_code, test_name, machine_name, instances_count)
-            if status == "success":
-                self.finish((dict(status=status, output=json.dumps(test_output))))
-            else:
-                self.finish((dict(status=status, msg=test_error_msg)))
-
-
-def make_sim_app():
-    return Application([(r"/sim", SimHandler)], **_app_settings())
-
-
-def start_sim_server(port):
-    asyncio.run(_serve_http(make_sim_app(), port, "Observer Simulator"))
 
 
 #####################################################

@@ -13,7 +13,7 @@ A monitoring tool for checking the status of local/remote servers, based on <a h
 cp .env.example .env   # fill in OBSERVER_COOKIE_SECRET and OBSERVER_ADMIN_PASSWORD_HASH
 docker compose up -d --build
 ```
-Starts MongoDB 7 plus the five Observer processes (TCP listener `8889`, dashboard `9000`, simulator `9001`, live `9002`, compute `9003`). Ports are published on `127.0.0.1` only (`OBSERVER_PUBLISH_HOST` overrides).
+Starts MongoDB 7 plus the four Observer processes (TCP listener `8889`, dashboard `9000`, live `9002`, compute `9003`). Ports are published on `127.0.0.1` only (`OBSERVER_PUBLISH_HOST` overrides).
 
 ### Root server (without Docker)
 ```bash

@@ -27,7 +27,3 @@ def live_name(machine):
 
 def stat_name(machine):
     return "[" + machine + "]-stat"
-
-
-def tests_name(machine):
-    return "[" + machine + "]-tests"

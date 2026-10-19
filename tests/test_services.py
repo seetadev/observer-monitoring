@@ -52,23 +52,3 @@ async def test_compute_requires_machine(serve):
     client = serve(root.make_compute_app())
     response = await client.post("/compute", data={"action": "FETCH_ESTIMATED_CHARTS"})
     assert response.status_code == 400
-
-
-@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
-@pytest.mark.xfail(strict=True, reason="a worker that dies before running the script is reported as success")
-async def test_run_test_reports_failure_when_the_browser_cannot_start(serve, monkeypatch):
-    from selenium import webdriver
-
-    def no_browser(*args, **kwargs):
-        raise RuntimeError("no browser available")
-
-    monkeypatch.setattr(webdriver, "Chrome", no_browser)
-    client = serve(root.make_sim_app())
-    body = (await client.post("/sim", data={"action": "RUN_TEST", "testName": "t", "machineName": "m",
-                                            "testCode": "pass", "instancesCount": "1"})).json()
-    assert body["status"] == "failure"
-
-
-async def test_sim_requires_an_action(serve):
-    client = serve(root.make_sim_app())
-    assert (await client.post("/sim", data={})).status_code == 400

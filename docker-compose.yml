@@ -1,4 +1,4 @@
-# Observer root server: TCP listener, dashboard, simulator, live and compute servers + MongoDB 7.
+# Observer root server: TCP listener, dashboard, live and compute servers + MongoDB 7.
 #
 #   cp .env.example .env   # then fill in the two required values
 #   docker compose up -d --build
@@ -48,12 +48,6 @@ services:
     command: ["dash", "9000"]
     ports:
       - "${OBSERVER_PUBLISH_HOST:-127.0.0.1}:9000:9000"
-
-  sim:
-    <<: *observer
-    command: ["sim", "9001"]
-    ports:
-      - "${OBSERVER_PUBLISH_HOST:-127.0.0.1}:9001:9001"
 
   live:
     <<: *observer

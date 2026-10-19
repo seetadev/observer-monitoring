@@ -15,5 +15,5 @@ RUN useradd --system --no-create-home observer \
     && mkdir -p /app/files_buffer && chown observer /app/files_buffer
 USER observer
 
-# python run.py {remote|listener|dash|sim|live|compute} PORT
+# python run.py {remote|listener|dash|live|compute} PORT
 ENTRYPOINT ["python", "run.py"]

@@ -2,7 +2,7 @@ import sys
 
 __author__ = 'sdpatro'
 
-USAGE = ("usage: python run.py {remote|listener|dash|sim|live|compute} PORT\n"
+USAGE = ("usage: python run.py {remote|listener|dash|live|compute} PORT\n"
          "       python run.py hash-password | agent-add NAME | agent-list | agent-revoke NAME")
 
 
@@ -29,9 +29,9 @@ def main(argv):
     if role == "remote":
         import remote
         remote.start_remote_server(port)
-    elif role in ("listener", "dash", "sim", "live", "compute"):
+    elif role in ("listener", "dash", "live", "compute"):
         import root
-        starter = {"listener": root.start_listener, "dash": root.start_dash_server, "sim": root.start_sim_server,
+        starter = {"listener": root.start_listener, "dash": root.start_dash_server,
                    "live": root.start_live_server, "compute": root.start_compute_server}[role]
         import auth
         try:
