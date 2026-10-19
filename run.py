@@ -2,7 +2,8 @@ import sys
 
 __author__ = 'sdpatro'
 
-USAGE = ("usage: python run.py {remote|listener|dash|live|compute} PORT\n"
+USAGE = ("usage: python run.py {listener|dash|live|compute} PORT\n"
+         "       python run.py agent [--config FILE] [--check]\n"
          "       python run.py hash-password | agent-add NAME | agent-list | agent-revoke NAME")
 
 
@@ -18,6 +19,9 @@ def admin_command(argv):
 
 
 def main(argv):
+    if len(argv) >= 2 and argv[1] in ("agent", "remote"):
+        import agent
+        return agent.main(argv[2:] if argv[1] == "agent" else [])
     if len(argv) >= 2 and argv[1] in ("hash-password", "agent-add", "agent-list", "agent-revoke"):
         return admin_command(argv)
     if len(argv) < 3:
@@ -26,10 +30,7 @@ def main(argv):
 
     role, port = argv[1], argv[2]
 
-    if role == "remote":
-        import remote
-        remote.start_remote_server(port)
-    elif role in ("listener", "dash", "live", "compute"):
+    if role in ("listener", "dash", "live", "compute"):
         import root
         starter = {"listener": root.start_listener, "dash": root.start_dash_server,
                    "live": root.start_live_server, "compute": root.start_compute_server}[role]

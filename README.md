@@ -24,21 +24,37 @@ bash run-root.sh
 
 Configuration (environment variables): `OBSERVER_MONGO_URL`, `OBSERVER_DB_NAME`, `OBSERVER_BIND` (bind address, default `127.0.0.1`), `OBSERVER_DEBUG`, `OBSERVER_FILES_DIR`, `OBSERVER_LIVE_TTL_SECONDS` (default 3600: removes a raw-sample buffer left behind by a stopped agent), `OBSERVER_STAT_RETENTION_DAYS` (default 0 = keep 1-minute statistics forever), and the access-control variables listed in `.env.example`.
 
-### Remote senders
-Run on each machine you want to monitor (Linux; Python 3.12 with `psutil` and `tornado`):
-```bash
-$ bash run-remote.sh
-Observer remote running at port 8888
-Enter destination IP: 
-203.0.113.10
-Enter destination port: 
-8889
-Enter remote name: 
-foobar-production
-Enter preferred NIC: 
-eth0
-```
-The agent token is read from `OBSERVER_AGENT_TOKEN` (or prompted for). The remote name must match the name the token was created for.
+### Agent (on each machine you monitor)
+
+The agent is one file, `agent.py`, and needs only Python 3.11+ and `psutil`. It runs without prompts, takes its settings from environment variables (or a TOML file), reconnects with exponential back-off when the server is unreachable, and works on Linux, macOS and Windows.
+
+1. On the Observer server, create the agent's token (shown once): `python run.py agent-add web-01`.
+2. On the monitored machine:
+   ```bash
+   sudo install -d /opt/observer-agent /etc/observer-agent
+   sudo python3 -m venv /opt/observer-agent/venv && sudo /opt/observer-agent/venv/bin/pip install -r requirements-agent.txt
+   sudo install -m 644 agent.py /opt/observer-agent/
+   sudo install -m 644 deploy/agent.env.example /etc/observer-agent/agent.env   # edit server / name
+   sudo sh -c 'umask 077; cat > /etc/observer-agent/token'                      # paste the token, Ctrl-D
+   sudo install -m 644 deploy/observer-agent.service /etc/systemd/system/
+   sudo systemctl daemon-reload && sudo systemctl enable --now observer-agent
+   journalctl -u observer-agent -f
+   ```
+3. Or run it directly: `OBSERVER_AGENT_SERVER=host OBSERVER_AGENT_NAME=web-01 OBSERVER_AGENT_TOKEN=... python agent.py` (`--check` validates the configuration and exits).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `OBSERVER_AGENT_SERVER` / `_PORT` | `127.0.0.1` / `8889` | Observer TCP listener |
+| `OBSERVER_AGENT_NAME` | host name | must equal the name the token was created for |
+| `OBSERVER_AGENT_TOKEN` or `_TOKEN_FILE` | (required) | the token; a file is preferred (mode 600). It is never accepted inside the TOML file |
+| `OBSERVER_AGENT_NIC` | `auto` | `auto` = all non-loopback interfaces, or an interface name |
+| `OBSERVER_AGENT_INTERVAL` | `1` | seconds between samples |
+| `OBSERVER_AGENT_BACKOFF_MAX` | `60` | longest wait between reconnect attempts |
+| `OBSERVER_AGENT_TLS`, `_TLS_CA` | off | TLS to a TLS-terminating proxy; optional CA file |
+| `OBSERVER_AGENT_CONFIG` | (none) | TOML file with the same keys in lower case (`deploy/agent.toml.example`) |
+
+The previous interactive `run-remote.sh` is gone; `python run.py agent` runs the same agent.
+
 ## Tests
 
 ```bash
