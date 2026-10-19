@@ -33,7 +33,9 @@ function fetchInstanceTypes(providerName){
                     _instancePricing = JSON.parse(response.response_data);
                     $("#instance-type-dropdown-menu").empty();
                     for(var i=0 ; i<(_instancePricing['instances']).length ; i++){
-                        $("#instance-type-dropdown-menu").append("<li class=\"dropdown-list-item\" onclick=\"setCurrentInstanceType(this)\">"+_instancePricing['instances'][i]['name'] +"<li>")
+                        $("#instance-type-dropdown-menu").append(
+                            $("<li class=\"dropdown-list-item\"></li>").text(_instancePricing['instances'][i]['name'])
+                                .on("click", function(){ setCurrentInstanceType(this); }))
                     }
                   },
         failure: function(response){
@@ -78,7 +80,7 @@ function fetchUtilization(machineName){
 }
 
 function setCurrentUtilization(duration,count){
-    _usagePercentage = Math.round((count/duration)*100,2);
+    _usagePercentage = duration > 0 ? Math.round((count/duration)*100,2) : 0;
     $("#usage-perc").html("<b>"+count.toString()+"</b> (minutes) out of <b>"+duration.toString()+"</b> (minutes): "+_usagePercentage+"%");
 }
 
