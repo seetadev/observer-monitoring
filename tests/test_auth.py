@@ -372,7 +372,7 @@ async def test_agent_names_are_unique_and_validated(db):
     await auth.create_agent("box")
     with pytest.raises(ValueError):
         await auth.create_agent("box")
-    for bad in ("", "has space", "a/b", "<b>x</b>", "x" * 65):
+    for bad in ("", "has space", "a/b", "<b>x</b>", "x" * 65, "..", ".hidden", "-x"):
         with pytest.raises(ValueError):
             await auth.create_agent(bad)
 

@@ -24,7 +24,7 @@ from db import get_db
 SESSION_COOKIE = "observer_session"
 MIN_PASSWORD_LENGTH = 12
 MIN_SECRET_LENGTH = 32
-NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 _SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2 ** 14, 8, 1
 _SCRYPT_MAX_N = 2 ** 16
@@ -157,7 +157,17 @@ class SessionMixin:
 
 
 class BaseHandler(SessionMixin, tornado.web.RequestHandler):
+    def machine_name(self, argument, required=True):
+        """A machine-name argument, or HTTP 400 when it is missing (if required) or not a plain name."""
+        value = self.get_argument(argument) if required else self.get_argument(argument, None)
+        if value is not None and not NAME_PATTERN.match(value):
+            raise tornado.web.HTTPError(400, reason="Invalid machine name")
+        return value
+
     def set_default_headers(self):
+        self.set_header("X-Content-Type-Options", "nosniff")
+        self.set_header("X-Frame-Options", "DENY")
+        self.set_header("Referrer-Policy", "same-origin")
         origin = self.request.headers.get("Origin")
         if origin and origin_allowed(origin, self.request.host):
             self.set_header("Access-Control-Allow-Origin", origin)
@@ -196,6 +206,12 @@ class PageHandler(BaseHandler):
 
 
 class AuthenticatedStaticFileHandler(SessionMixin, tornado.web.StaticFileHandler):
+    """Exported files: session required, always downloaded, never rendered or sniffed by the browser."""
+
+    def set_extra_headers(self, path):
+        self.set_header("X-Content-Type-Options", "nosniff")
+        self.set_header("Content-Disposition", "attachment")
+
     def prepare(self):
         if not self.current_user:
             self.set_status(401)
@@ -248,7 +264,8 @@ async def ensure_indexes():
 async def create_agent(name):
     """Register an agent and return its token. The token is not stored, only its digest."""
     if not NAME_PATTERN.match(name):
-        raise ValueError("agent name must match [A-Za-z0-9._-]{1,64}")
+        raise ValueError("agent name must be 1-64 characters: letters, digits, dot, underscore or hyphen, "
+                         "starting with a letter or digit")
     await ensure_indexes()
     token = secrets.token_urlsafe(32)
     try:

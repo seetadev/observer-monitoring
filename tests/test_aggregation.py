@@ -39,11 +39,6 @@ def test_condense_data_estimation_keeps_last_record_at_gradient_one():
     assert len(root.condense_data_estimation(records, 1)) == 3
 
 
-def test_excel_column_names():
-    assert root.get_excel_column(1) == "A"
-    assert root.get_excel_column(26) == "Z"
-
-
 def test_bandwidth_usage_sums_last_record():
     records = [make_stat(bytes_recv=10, bytes_sent=20), make_stat(bytes_recv=30, bytes_sent=40)]
     assert root.get_bandwidth_usage(records) == (30, 40)

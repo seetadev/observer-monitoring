@@ -1,16 +1,17 @@
 import asyncio
 import calendar
+import csv
 import datetime
 import json
 import logging
 import os
 import time
+import uuid
 
 import dateutil.parser
 import tornado.iostream
 import tornado.web
 import xlsxwriter
-from PIL import Image
 from tornado.httpserver import HTTPServer
 from tornado.iostream import StreamClosedError
 from tornado.tcpserver import TCPServer
@@ -19,6 +20,7 @@ from tornado.web import Application
 import auth
 import config
 import uimodules
+import validation
 from db import get_db, live_name, stat_name
 
 __author__ = 'sdpatro'
@@ -26,6 +28,7 @@ __author__ = 'sdpatro'
 log = logging.getLogger('observer')
 
 MAX_LINE_BYTES = 64 * 1024
+MAX_EXPORT_ROWS = 100000
 AUTH_TIMEOUT_SECONDS = 10
 AGENT_RECHECK_SECONDS = 30
 
@@ -69,6 +72,10 @@ def average_group(group):
 
 
 # The TCP listener endpoint for all remote senders.
+def _reject_constant(name):
+    raise ValueError("non-finite number in record")
+
+
 class TCPListener(TCPServer):
     """Agents must send {"token": ...} first; unknown or wrong tokens are disconnected without being stored."""
 
@@ -109,8 +116,8 @@ class TCPListener(TCPServer):
         return agent['name'] if agent else None
 
     async def store_record(self, data, db, ip, agent):
-        data_json = json.loads(data)
-        if not isinstance(data_json, dict) or data_json.get('name') != agent:
+        data_json = validation.clean_record(json.loads(data, parse_constant=_reject_constant))
+        if data_json['name'] != agent:
             raise ValueError("record does not belong to the authenticated agent")
 
         if 'node' in data_json:
@@ -176,19 +183,53 @@ def start_listener(port):
 ########################################################################
 
 
-def get_excel_column(number):
-    char_list = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
-                 'U', 'V', 'W', 'X', 'Y', 'Z']
-    rem = number
-    result = ""
-    while True:
-        if rem > 26:
-            result = result + char_list[(rem - (26 * int(rem / 26))) - 1]
-            rem = int(rem / 26)
-        else:
-            result = result + char_list[rem - 1]
-            break
-    return result
+EXPORT_SUFFIX = {"CSV": ".csv", "XLSX": ".xlsx"}
+
+
+def export_path(file_name):
+    """Absolute path of an export file; refuses anything that would leave FILES_DIR."""
+    base = os.path.realpath(config.FILES_DIR)
+    path = os.path.realpath(os.path.join(base, file_name))
+    if os.path.dirname(path) != base:
+        raise ValueError("export path escapes the export directory")
+    os.makedirs(base, exist_ok=True)
+    return path
+
+
+def spreadsheet_safe(value):
+    """Text that a spreadsheet application would read as a formula is prefixed so it stays text."""
+    if isinstance(value, bool) or isinstance(value, (int, float)):
+        return value
+    text = str(value)
+    return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
+
+
+def write_csv(path, columns, rows):
+    with open(path, "x", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow([spreadsheet_safe(column) for column in columns])
+        for row in rows:
+            writer.writerow([spreadsheet_safe(value) for value in row])
+
+
+def write_xlsx(path, columns, rows):
+    workbook = xlsxwriter.Workbook(path, {"strings_to_formulas": False, "strings_to_urls": False})
+    worksheet = workbook.add_worksheet()
+    bold_header = workbook.add_format({'bold': True, 'font_color': '#0b9f51'})
+    large_bold_green = workbook.add_format({'bold': True, 'font_size': 18, 'font_color': '#009245'})
+    worksheet.set_row(0, 30)
+    worksheet.write_string(0, 0, "Stats", large_bold_green)
+    for col, column in enumerate(columns):
+        worksheet.write_string(2, col, spreadsheet_safe(column), bold_header)
+        worksheet.set_column(col, col, 20)
+    for row_index, row in enumerate(rows):
+        for col, value in enumerate(row):
+            value = spreadsheet_safe(value)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                worksheet.write_number(3 + row_index, col, value)
+            else:
+                worksheet.write_string(3 + row_index, col, str(value))
+    workbook.close()
 
 
 class ApiHandler(auth.ApiBase):
@@ -216,6 +257,31 @@ class ApiHandler(auth.ApiBase):
         self.set_status(status)
         self.finish(dict(auth="False", message=message))
 
+    async def export_results(self):
+        """Write live_data to FILES_DIR as CSV or XLSX under a server-chosen file name."""
+        test_name = self.get_argument("test_name", "")
+        file_type = self.get_argument("file_type", "")
+        if not validation.valid_name(test_name) or file_type not in EXPORT_SUFFIX:
+            self.error_respond(400, "Invalid export request.")
+            return
+        try:
+            live_data = json.loads(self.get_argument("jsonData"))["live_data"]
+        except (ValueError, KeyError, TypeError):
+            self.error_respond(400, "Invalid export data.")
+            return
+        if (not isinstance(live_data, list) or not 0 < len(live_data) <= MAX_EXPORT_ROWS
+                or not all(isinstance(record, dict) for record in live_data)):
+            self.error_respond(400, "Invalid export data.")
+            return
+
+        columns = [str(column) for column in live_data[0]]
+        rows = [[record.get(column, "") for column in live_data[0]] for record in live_data]
+        file_name = "%s_%s_%s%s" % (test_name, datetime.datetime.now().strftime("%Y%m%dT%H%M%S"),
+                                    uuid.uuid4().hex[:8], EXPORT_SUFFIX[file_type])
+        path = export_path(file_name)
+        await asyncio.to_thread(write_csv if file_type == "CSV" else write_xlsx, path, columns, rows)
+        self.finish(dict(file_name=file_name))
+
     async def post(self):
         if self.get_argument("action", None) is None:
             self.error_respond(400, "No action specified")
@@ -236,6 +302,8 @@ class ApiHandler(auth.ApiBase):
             machine_name = self.get_argument("machine_name", None)
             if machine_name is None:
                 self.error_respond(400, "Machine name not provided.")
+            elif not validation.valid_name(machine_name):
+                self.error_respond(400, "Invalid machine name.")
             else:
                 machine = await db["machines"].find_one({'name': machine_name})
                 self.finish({'machine': machine['machine'], 'node': machine['node'], 'version': machine['version'],
@@ -243,7 +311,7 @@ class ApiHandler(auth.ApiBase):
                              'architecture': machine['architecture'], 'memory': machine['memory']})
 
         elif action == "GET_STAT_DATA":
-            client_name = self.get_argument("client-name")
+            client_name = self.machine_name("client-name")
             stat_data = []
             async for record in db[stat_name(client_name)].find():
                 record['_id'] = str(record['_id'])
@@ -272,7 +340,7 @@ class ApiHandler(auth.ApiBase):
             self.finish(dict(auth="False"))
 
         elif action == "DELETE_REMOTE_MACHINE":
-            machine_name = self.get_argument("machine_id")
+            machine_name = self.machine_name("machine_id")
             try:
                 await db[live_name(machine_name)].drop()
                 await db[stat_name(machine_name)].drop()
@@ -282,62 +350,8 @@ class ApiHandler(auth.ApiBase):
                 self.error_respond(500, "Something went wrong: " + str(e))
 
         elif action == "SAVE_TEST_RESULT_AS":
-            json_data = json.loads(self.get_argument("jsonData"))
-            test_name = self.get_argument("test_name")
-            file_type = self.get_argument("file_type")
+            await self.export_results()
 
-            if file_type == "XLSX":
-
-                live_data = json_data["live_data"]
-                snaps = json_data["snaps_id"]
-
-                workbook_name = test_name + "_" + datetime.datetime.now().isoformat()
-
-                workbook = xlsxwriter.Workbook(os.path.join(config.FILES_DIR, workbook_name + ".xlsx"))
-                worksheet = workbook.add_worksheet()
-                bold_header = workbook.add_format({'bold': True, 'font_color': '#0b9f51'})
-                large_bold_green = workbook.add_format({'bold': True, 'font_size': 18, 'font_color': '#009245'})
-                large_bold_blue = workbook.add_format({'bold': True, 'font_size': 18, 'font_color': '#005392'})
-
-                worksheet.set_row(0, 30)
-                worksheet.write("A1", "Stats", large_bold_green)
-
-                record_offset = 3
-                property_header_offset = 2
-                col = 0
-
-                for prop in live_data[0]:
-                    worksheet.write(get_excel_column(col + 1) + str(property_header_offset + 1), str(prop),
-                                    bold_header)
-                    worksheet.set_column(get_excel_column(col + 1) + ":" + get_excel_column(col + 1), 20)
-                    col += 1
-                for j, record in enumerate(live_data):
-                    for k, value in enumerate(record.values()):
-                        worksheet.write(get_excel_column(k + 1) + str(j + 1 + record_offset), str(value))
-
-                worksheet.set_row(len(live_data) + 4, 30)
-                worksheet.write("A" + str(len(live_data) + 5), "Snaps", large_bold_blue)
-
-                images_offset = len(live_data) + 5
-                last_cell_height = 0
-                for snap in snaps:
-                    worksheet.insert_image("A" + str(images_offset + last_cell_height + 2), snap,
-                                           {'x_scale': 0.5, 'y_scale': 0.5})
-                    im = Image.open(snap)
-                    width, height = im.size
-                    last_cell_height += int(height / 30)
-
-                workbook.close()
-                self.finish(dict(file_name=workbook_name))
-
-            elif file_type == "CSV":
-                live_data = json_data["live_data"]
-                csv_file_name = test_name + "_" + datetime.datetime.now().isoformat() + ".csv"
-                with open(os.path.join(config.FILES_DIR, csv_file_name), 'w') as csv_fp:
-                    csv_fp.write(",".join(live_data[0]) + "\n")
-                    for record in live_data:
-                        csv_fp.write(",".join(str(value) for value in record.values()) + "\n")
-                self.finish(dict(file_name=csv_file_name))
         else:
             self.error_respond(400, "Not a valid action")
 
@@ -423,7 +437,7 @@ class LiveMonitorHandler(auth.ApiBase):
         action = self.get_argument("action", None)
         if action is not None:
             if action == "GET_LIVE_DATA":
-                client_name = self.get_argument("client-name")
+                client_name = self.machine_name("client-name")
                 await self.get_live_data(client_name)
 
         else:
@@ -498,7 +512,7 @@ def condense_data_estimation(stat_records, minute_gradient):
 class ComputeHandler(auth.ApiBase):
     async def post(self):
         action = self.get_argument("action", None)
-        machine = self.get_argument("machine", None)
+        machine = self.machine_name("machine", required=False)
         days_duration = self.get_argument("days_duration", None)
         if action is None:
             self.error_respond(400, "No action specified")
