@@ -1,5 +1,3 @@
-python run.py remote 8888
-read dest_ip
-read dest_port
-read remote_name
-read nic
+#!/usr/bin/env bash
+cd "$(dirname "$0")" || exit 1
+"${PYTHON:-python3}" run.py remote 8888

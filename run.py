@@ -1,38 +1,33 @@
+import sys
+
 __author__ = 'sdpatro'
 
-import sys
-arg_list = sys.argv
+USAGE = "usage: python run.py {remote|listener|dash|sim|live|compute} PORT"
 
-if len(arg_list) < 3:
-    print "ERROR: Arguments missing"
-    exit()
 
-type = arg_list[1]
-port = arg_list[2]
+def main(argv):
+    if len(argv) < 3:
+        print("ERROR: Arguments missing\n" + USAGE)
+        return 2
 
-if arg_list[1] == "remote":
-    import remote
-    remote.start_remote_server(port)
+    role, port = argv[1], argv[2]
 
-elif arg_list[1] == "listener":
-    import root
-    root.start_listener(port)
+    if role == "remote":
+        import remote
+        remote.start_remote_server(port)
+    elif role in ("listener", "dash", "sim", "live", "compute"):
+        import root
+        starter = {"listener": root.start_listener, "dash": root.start_dash_server, "sim": root.start_sim_server,
+                   "live": root.start_live_server, "compute": root.start_compute_server}[role]
+        try:
+            starter(port)
+        except KeyboardInterrupt:
+            pass
+    else:
+        print("Invalid args\n" + USAGE)
+        return 2
+    return 0
 
-elif arg_list[1] == "dash":
-    import root
-    root.start_dash_server(port)
 
-elif arg_list[1] == "sim":
-    import root
-    root.start_sim_server(port)
-
-elif arg_list[1] == "live":
-    import root
-    root.start_live_server(port)
-
-elif arg_list[1] == "compute":
-    import root
-    root.start_compute_server(port)
-
-else:
-    print "Invalid args"
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
