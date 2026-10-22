@@ -33,7 +33,9 @@ function fetchInstanceTypes(providerName){
                     _instancePricing = JSON.parse(response.response_data);
                     $("#instance-type-dropdown-menu").empty();
                     for(var i=0 ; i<(_instancePricing['instances']).length ; i++){
-                        $("#instance-type-dropdown-menu").append("<li class=\"dropdown-list-item\" onclick=\"setCurrentInstanceType(this)\">"+_instancePricing['instances'][i]['name'] +"<li>")
+                        $("#instance-type-dropdown-menu").append(
+                            $("<li class=\"dropdown-list-item\"></li>").text(_instancePricing['instances'][i]['name'])
+                                .on("click", function(){ setCurrentInstanceType(this); }))
                     }
                   },
         failure: function(response){
@@ -78,7 +80,7 @@ function fetchUtilization(machineName){
 }
 
 function setCurrentUtilization(duration,count){
-    _usagePercentage = Math.round((count/duration)*100,2);
+    _usagePercentage = duration > 0 ? Math.round((count/duration)*100,2) : 0;
     $("#usage-perc").html("<b>"+count.toString()+"</b> (minutes) out of <b>"+duration.toString()+"</b> (minutes): "+_usagePercentage+"%");
 }
 
@@ -217,86 +219,7 @@ function setNetDemandStats(misc_data){
     $("#net_demand_stats").text("Total GB downloaded: "+_dlBandwidthGb.toString()+" Total GB uploaded: "+_ulBandwidthGb.toString());
 }
 
-function attachCpuEstimationChart(records){
-    var cpuSeries = [];
-    for(var i=0 ; i<cpuData.length ; i++){
-        cpuSeries.push({'values':cpuData[i]});
-    }
 
-    // CPU
-    var chartData={
-      "type": "line",
-      "background-color":"#333333",
-      "utc":true,
-      "plotarea":{
-        "adjust-layout":true
-        },
-      "scale-x":{
-        "transform":{
-          "type":"date",
-        }
-      },
-      "series": cpuSeries
-    };
-    zingchart.render({
-        id:'cpu_demand_curve',
-        data:chartData,
-        height:_chartHeight,
-        width:_chartWidth
-    });
-    setCpuDemandStats();
-
-    // RAM
-    var chartData={
-      "type": "line",
-      "background-color":"#333333",
-      "utc":true,
-      "plotarea":{
-        "adjust-layout":true
-        },
-      "scale-x":{
-        "transform":{
-          "type":"date"
-        }
-      },
-      "series": [
-        {"values":ramData}
-      ]
-    };
-    zingchart.render({
-        id:'ram_demand_curve',
-        data:chartData,
-        height:_chartHeight,
-        width:_chartWidth
-    });
-
-    setRamDemandStats();
-
-    // Net
-    var chartData={
-      "type": "line",
-      "background-color":"#333333",
-      "utc":true,
-      "plotarea":{
-        "adjust-layout":true
-        },
-      "scale-x":{
-        "transform":{
-          "type":"date"
-        }
-      },
-      "series": [
-        {"values":netData[0]},
-        {"values":netData[1]}
-      ]
-    };
-    zingchart.render({
-        id:'net_demand_curve',
-        data:chartData,
-        height:_chartHeight,
-        width:_chartWidth
-    });
-}
 
 
 function generateData_CPU(record){
@@ -354,208 +277,14 @@ function showGraphs(_graphType){
     setChartsInfo();
 }
 
-function renderGraphs_disjoint(){
-    var cpuSeries = [];
-    for(var i=0 ; i<cpuData_disjoint.length ; i++){
-        cpuSeries.push({'values':cpuData_disjoint[i],"line-color":cpuColors[i],"line-width":2});
-    }
-    // CPU
-    var chartData={
-      "type": "line",
-      "background-color":"#333333",
-      "utc":true,
-      "plotarea":{
-        "adjust-layout":true
-        },
-      "scale-x":{
-        "transform":{
-          "type":"date"
-        }
-      },
-      "series": cpuSeries
-    };
-    zingchart.render({
-        id:'cpu_chart',
-        data:chartData,
-        height:400,
-        width:_rowWidth
-    });
-    // RAM
-    var chartData={
-      "type": "line",
-      "background-color":"#333333",
-      "utc":true,
-      "plotarea":{
-        "adjust-layout":true
-        },
-      "scale-x":{
-        "transform":{
-          "type":"date"
-        }
-      },
-      "series": [
-        {"values":ramData_disjoint,
-            "line-color":ramColor}
-      ]
-    };
-    zingchart.render({
-        id:'ram_chart',
-        data:chartData,
-        height:400,
-        width:_rowWidth
-    });
 
-    // Net
-    var chartData={
-      "type": "line",
-      "background-color":"#333333",
-      "utc":true,
-      "plotarea":{
-        "adjust-layout":true
-        },
-      "scale-x":{
-        "transform":{
-          "type":"date"
-        }
-      },
-      "series": [
-        {"values":netData_disjoint[0],"line-color":netColor[0]},
-        {"values":netData_disjoint[1],"line-color":netColor[1]}
-      ]
-    };
-    zingchart.render({
-        id:'net_chart',
-        data:chartData,
-        height:400,
-        width:_rowWidth
-    });
-
-    // Storage
-    var chartData={
-      "type": "line",
-      "background-color":"#333333",
-      "utc":true,
-      "plotarea":{
-        "adjust-layout":true
-        },
-      "scale-x":{
-        "transform":{
-          "type":"date"
-        }
-      },
-      "series": [
-        {"values":storageData_disjoint,"line-color":storageColor}
-      ]
-    };
-    zingchart.render({
-        id:'storage_chart',
-        data:chartData,
-        height:400,
-        width:_rowWidth
-    });
-}
 
 function renderGraphs(){
-    var cpuSeries = [];
-    for(var i=0 ; i<cpuData.length ; i++){
-        cpuSeries.push({'values':cpuData[i],"line-color":cpuColors[i],"line-width":2});
-    }
-    // CPU
-    var chartData={
-      "type": "line",
-      "background-color":"#333333",
-      "utc":true,
-      "plotarea":{
-        "adjust-layout":true
-        },
-      "scale-x":{
-        "transform":{
-          "type":"date"
-        }
-      },
-      "series": cpuSeries
-    };
-    zingchart.render({
-        id:'cpu_chart',
-        data:chartData,
-        height:400,
-        width:_rowWidth
-    });
+    drawResourceCharts(cpuData, ramData, netData, storageData, _rowWidth);
+}
 
-    // RAM
-    var chartData={
-      "type": "line",
-      "background-color":"#333333",
-      "utc":true,
-      "plotarea":{
-        "adjust-layout":true
-        },
-      "scale-x":{
-        "transform":{
-          "type":"date"
-        }
-      },
-      "series": [
-        {"values":ramData,
-         "line-color":ramColor}
-      ]
-    };
-    zingchart.render({
-        id:'ram_chart',
-        data:chartData,
-        height:400,
-        width:_rowWidth
-    });
-
-    // Net
-    var chartData={
-      "type": "line",
-      "background-color":"#333333",
-      "utc":true,
-      "plotarea":{
-        "adjust-layout":true
-        },
-      "scale-x":{
-        "transform":{
-          "type":"date"
-        }
-      },
-      "series": [
-        {"values":netData[0],"line-color":netColor[0]},
-        {"values":netData[1],"line-color":netColor[1]}
-      ]
-    };
-    zingchart.render({
-        id:'net_chart',
-        data:chartData,
-        height:400,
-        width:_rowWidth
-    });
-
-    // Storage
-    var chartData={
-      "type": "line",
-      "background-color":"#333333",
-      "utc":true,
-      "plotarea":{
-        "adjust-layout":true
-        },
-      "scale-x":{
-        "transform":{
-          "type":"date"
-        }
-      },
-      "series": [
-        {"values":storageData,"line-color":storageColor}
-      ]
-    };
-    zingchart.render({
-        id:'storage_chart',
-        data:chartData,
-        height:400,
-        width:_rowWidth
-    });
-
+function renderGraphs_disjoint(){
+    drawResourceCharts(cpuData_disjoint, ramData_disjoint, netData_disjoint, storageData_disjoint, _rowWidth);
 }
 
 function setChartsInfo(){

@@ -1,0 +1,21 @@
+# Pull probes: the monitor checks these targets itself (no agent needed).
+# The file is read at start-up; restart the monitor after editing it. Only the operator can add targets:
+# there is deliberately no web API for creating probes.
+
+[[probe]]
+name = "rhinestone-health"
+type = "http"
+url = "http://host.docker.internal:8888/healthz"   # from the monitor container to a service on the Docker host
+interval = 10          # seconds between checks (default 10)
+timeout = 5            # seconds (default 5)
+expect_status = 200    # default: any 2xx
+expect_text = "ok"     # optional: the body must contain this
+fail_after = 2         # consecutive failures before "down" (default 2)
+recover_after = 1      # consecutive successes before "up" again (default 1)
+
+[[probe]]
+name = "doc-onlook-port"
+type = "tcp"
+host = "host.docker.internal"
+port = 2112
+interval = 10
