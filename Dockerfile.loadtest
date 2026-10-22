@@ -1,0 +1,15 @@
+# Load-test worker: Observer + Playwright with Chromium. Optional (compose profile "loadtest").
+FROM mcr.microsoft.com/playwright/python:v1.64.0-noble
+
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 OBSERVER_LOADTEST_NO_SANDBOX=1
+WORKDIR /app
+
+COPY requirements.txt requirements-loadtest.txt ./
+RUN pip install --no-cache-dir -r requirements-loadtest.txt
+
+COPY config.py db.py auth.py admin_cli.py root.py validation.py monitor.py loadtest.py agent.py run.py uimodules.py ./
+
+# The base image ships an unprivileged user for browsers.
+USER pwuser
+ENTRYPOINT ["python", "run.py"]
+CMD ["loadtest"]
