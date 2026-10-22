@@ -29,6 +29,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-dev.txt
       - run: pip install -r requirements-dev.txt
+      - run: playwright install --with-deps chromium
       - run: ruff check .
       - run: pytest -q -rx
 
@@ -42,3 +43,5 @@ jobs:
       - uses: actions/checkout@v4
       - run: docker compose config -q
       - run: docker compose build
+      - run: docker compose --profile loadtest build loadtest
+      - run: docker run --rm --entrypoint python observer-monitoring-loadtest:local -c "import loadtest, root, run, agent"

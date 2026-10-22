@@ -55,6 +55,21 @@ The agent is one file, `agent.py`, and needs only Python 3.11+ and `psutil`. It 
 
 The previous interactive `run-remote.sh` is gone; `python run.py agent` runs the same agent.
 
+## Page-load tests
+
+The **Performance Testing** page runs fixed, parameterised page-load tests: you give a URL, a number of virtual users and a duration, and nothing else. There are no scripts or steps; no user-supplied code runs anywhere. Each virtual user repeatedly loads the page in its own isolated Chromium context (HTTP cache off, so every load is a fresh load) and records the browser's own navigation timings. Results are stored and shown on the page: time to first byte, DOM content loaded, load event, navigation time, document and sub-resource size and count (min / mean / p50 / p95 / max), loads per second, status codes and errors (timeout, network, HTTP). The summary can be downloaded as CSV.
+
+The tests run in the optional `loadtest` worker (it needs Chromium, so it has its own image):
+
+```bash
+OBSERVER_LOADTEST_ALLOWED_HOSTS=app.example.org,*.staging.example.org docker compose --profile loadtest up -d --build
+```
+
+* **Targets must be listed.** A load test is a request made by the server, so `OBSERVER_LOADTEST_ALLOWED_HOSTS` (host names, `*.example.org`, IP addresses or CIDR ranges) decides what may be tested. With an empty list every test is refused. Every request the browser makes, including each redirect hop and sub-resource, is checked against the same list and blocked otherwise (the result shows how many were blocked and which hosts). Link-local addresses and cloud-metadata names are never allowed, even if listed.
+* **Limits**: `OBSERVER_LOADTEST_MAX_CONCURRENCY` (10) and `OBSERVER_LOADTEST_MAX_DURATION` (120 s); one test runs at a time and at most 5 wait in the queue; a page load times out after `OBSERVER_LOADTEST_PAGE_TIMEOUT` (30 s). Results are kept `OBSERVER_LOADTEST_RETENTION_DAYS` (90).
+* Starting, cancelling and reading tests needs the admin session (and the XSRF token for changes).
+* Without Compose: `pip install -r requirements-loadtest.txt && playwright install chromium && python run.py loadtest`.
+
 ## TLS and reverse proxies
 
 Observer itself speaks plain HTTP/TCP; put TLS in front of it.

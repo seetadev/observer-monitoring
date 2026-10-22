@@ -68,6 +68,30 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  # Fixed, parameterised page-load tests (Playwright). Optional: docker compose --profile loadtest up -d
+  # Targets must be listed in OBSERVER_LOADTEST_ALLOWED_HOSTS or every test is refused.
+  loadtest:
+    image: observer-monitoring-loadtest:local
+    profiles: ["loadtest"]
+    build:
+      context: .
+      dockerfile: Dockerfile.loadtest
+    pull_policy: build
+    init: true
+    ipc: host
+    environment:
+      OBSERVER_MONGO_URL: mongodb://mongo:27017
+      OBSERVER_DB_NAME: ${OBSERVER_DB_NAME:-observerdb}
+      OBSERVER_LOADTEST_ALLOWED_HOSTS: ${OBSERVER_LOADTEST_ALLOWED_HOSTS:-}
+      OBSERVER_LOADTEST_MAX_CONCURRENCY: ${OBSERVER_LOADTEST_MAX_CONCURRENCY:-10}
+      OBSERVER_LOADTEST_MAX_DURATION: ${OBSERVER_LOADTEST_MAX_DURATION:-120}
+    depends_on:
+      mongo:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
   live:
     <<: *observer
     command: ["live", "9002"]

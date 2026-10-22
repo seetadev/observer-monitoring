@@ -1,11 +1,40 @@
-{% module headModuleTemplate("Performance Testing",[]) %}
+{% module headModuleTemplate("Performance Testing",["js/perf.js"]) %}
 <body>
     <div class="container-fluid">
         <div class="row row-offcanvas row-offcanvas-left">
             {% module sideBarModuleTemplate() %}
             <div class="col-xs-12 col-sm-9" id="main-area" style="padding-top:20px">
-                <h3>Performance testing</h3>
-                <p>Running user-written scripts has been removed. Fixed, parameterised load-test scenarios will replace it.</p>
+                <h3>Page-load tests</h3>
+                <p class="text-muted">Load a page repeatedly from a real browser (Chromium, cache off) with several virtual
+                    users at once and measure what the browser reports. There are no scripts or steps: only the URL,
+                    the number of users and the duration.</p>
+                <div id="worker-warning" class="alert alert-warning" style="display:none">
+                    The load-test worker is not running, so queued tests will wait.
+                </div>
+                <form id="loadtest-form" class="form-inline" onsubmit="return startLoadtest();">
+                    <input id="lt-url" type="text" class="form-control" style="width:40%" placeholder="https://example.org/" autocomplete="off">
+                    <label>Users <input id="lt-concurrency" type="number" min="1" value="3" class="form-control" style="width:80px"></label>
+                    <label>Seconds <input id="lt-duration" type="number" min="5" value="20" class="form-control" style="width:90px"></label>
+                    <button id="lt-start" type="submit" class="btn btn-default">Run test</button>
+                </form>
+                <div id="lt-hint" class="text-muted" style="margin:6px 0"></div>
+                <div id="lt-error" class="text-danger"></div>
+                <h4>Runs</h4>
+                <table class="table table-condensed table-hover" id="lt-runs">
+                    <thead><tr><th>When</th><th>Page</th><th>Users</th><th>Seconds</th><th>Status</th><th>Loads</th><th>Load p95</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+                <div id="lt-detail" style="display:none">
+                    <h4 id="lt-detail-title"></h4>
+                    <div id="lt-detail-info" class="text-muted"></div>
+                    <button id="lt-cancel" class="btn btn-default btn-sm" style="display:none" onclick="return cancelLoadtest();">Cancel</button>
+                    <button id="lt-csv" class="btn btn-default btn-sm" style="display:none" onclick="return downloadLoadtestCsv();">Download CSV</button>
+                    <table class="table table-condensed" id="lt-summary">
+                        <thead><tr><th>Metric</th><th>Loads</th><th>Min</th><th>Mean</th><th>p50</th><th>p95</th><th>Max</th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                    <div id="lt-extra"></div>
+                </div>
             </div>
         </div>
     </div>

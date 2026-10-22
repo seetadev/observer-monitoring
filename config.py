@@ -32,6 +32,16 @@ ALERT_WEBHOOK_URL = os.environ.get("OBSERVER_ALERT_WEBHOOK_URL", "").strip()
 ALERT_WEBHOOK_SECRET = os.environ.get("OBSERVER_ALERT_WEBHOOK_SECRET", "")
 EVENT_RETENTION_DAYS = int(os.environ.get("OBSERVER_EVENT_RETENTION_DAYS", "30"))
 
+# Load tests (the `loadtest` worker). Targets must be listed: a load test is a request made by the server.
+# Entries: host names, "*.example.org", IP addresses or CIDR ranges. Empty = no target is allowed.
+LOADTEST_ALLOWED_HOSTS = [h.strip().lower() for h in os.environ.get("OBSERVER_LOADTEST_ALLOWED_HOSTS", "").split(",")
+                          if h.strip()]
+LOADTEST_MAX_CONCURRENCY = int(os.environ.get("OBSERVER_LOADTEST_MAX_CONCURRENCY", "10"))
+LOADTEST_MAX_DURATION = int(os.environ.get("OBSERVER_LOADTEST_MAX_DURATION", "120"))
+LOADTEST_PAGE_TIMEOUT = float(os.environ.get("OBSERVER_LOADTEST_PAGE_TIMEOUT", "30"))
+LOADTEST_RETENTION_DAYS = int(os.environ.get("OBSERVER_LOADTEST_RETENTION_DAYS", "90"))
+LOADTEST_NO_SANDBOX = _flag("OBSERVER_LOADTEST_NO_SANDBOX")   # needed inside containers
+
 # Address the HTTP and TCP servers bind to. Loopback by default; the Docker image sets 0.0.0.0.
 BIND_ADDRESS = os.environ.get("OBSERVER_BIND", "127.0.0.1")
 

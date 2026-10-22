@@ -20,6 +20,7 @@ from tornado.web import Application
 import auth
 import config
 import db
+import loadtest
 import monitor
 import uimodules
 import validation
@@ -350,6 +351,38 @@ class ApiHandler(auth.ApiBase):
 
         elif action == "GET_STATES":
             self.finish(await monitor.read_states())
+
+        elif action == "START_LOADTEST":
+            allowed_arguments = {"action", "url", "concurrency", "duration", "_xsrf"}
+            if set(self.request.arguments) - allowed_arguments:
+                self.error_respond(400, "A load test takes only url, concurrency and duration.")
+                return
+            raw = {key: self.get_argument(key, "") for key in ("url", "concurrency", "duration")}
+            try:
+                run_id = await loadtest.enqueue(raw)
+            except loadtest.LoadtestError as exc:
+                self.error_respond(400, str(exc))
+                return
+            self.finish(dict(id=run_id))
+
+        elif action == "GET_LOADTESTS":
+            self.finish(dict(runs=await loadtest.list_runs(), worker=await loadtest.worker_status(),
+                             limits={"max_concurrency": config.LOADTEST_MAX_CONCURRENCY,
+                                     "max_duration": config.LOADTEST_MAX_DURATION},
+                             allowed_hosts=config.LOADTEST_ALLOWED_HOSTS))
+
+        elif action == "GET_LOADTEST":
+            run = await loadtest.get_run(self.get_argument("id", ""))
+            if run is None:
+                self.error_respond(404, "Unknown test.")
+                return
+            self.finish(run)
+
+        elif action == "CANCEL_LOADTEST":
+            if not await loadtest.request_cancel(self.get_argument("id", "")):
+                self.error_respond(404, "No such test is waiting or running.")
+                return
+            self.finish(dict(status="cancelling"))
 
         elif action == "GET_EVENTS":
             self.finish(dict(events=await monitor.read_events()))

@@ -45,6 +45,8 @@ def test_the_simulator_service_no_longer_exists():
     assert not hasattr(root, "runTests") and not hasattr(root, "ObserverDriver")
 
 
-async def test_perf_page_is_informational_and_has_no_editor(dash):
+async def test_perf_page_is_a_parameter_form_without_any_code_editor(dash):
     page = (await dash.get("/perf")).text
-    assert "removed" in page and "perf.js" not in page and "<textarea" not in page
+    assert "Page-load tests" in page and "<textarea" not in page and "mode-python" not in page
+    for field in ("lt-url", "lt-concurrency", "lt-duration"):
+        assert 'id="%s"' % field in page

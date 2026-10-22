@@ -73,6 +73,8 @@ async def ensure_indexes():
     await database["agents"].create_index("name", unique=True)
     await database["states"].create_index([("kind", 1), ("name", 1)])
     await _ttl_index(database["events"], config.EVENT_RETENTION_DAYS * 86400)
+    await database["loadtests"].create_index([("created", -1)])
+    await _ttl_index(database["loadtests"], config.LOADTEST_RETENTION_DAYS * 86400)
     await database["events"].create_index("time")
 
 
