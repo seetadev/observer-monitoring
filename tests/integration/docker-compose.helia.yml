@@ -1,0 +1,25 @@
+# The REAL Helia sidecar (meshkit-sidecar-helia), for the opt-in integration test only. Not part of the app's stack.
+#   export HELIA_SIDECAR_SECRET=$(openssl rand -hex 32)
+#   docker compose -f tests/integration/docker-compose.helia.yml up -d --build --wait
+#   HELIA_SIDECAR_URL=http://127.0.0.1:5052 pytest tests/integration -v
+#   docker compose -f tests/integration/docker-compose.helia.yml down -v
+# The sidecar lives in a PRIVATE repo and, today, only in the open PR seetadev/Tornado-Backend-Stack#15 (branch
+# migrate/07b-helia). Docker cannot clone it anonymously, so point HELIA_SIDECAR_BUILD_CONTEXT at a local checkout's
+# meshkit-sidecar-helia directory. The client was written against 8afe218 and re-verified at a114973, which also fixes the
+# missing-Content-Type upload bug and pins the sidecar's dependencies (npm ci).
+#   git clone git@github.com:seetadev/Tornado-Backend-Stack.git ../Tornado-Backend-Stack
+#   git -C ../Tornado-Backend-Stack checkout a114973
+#   export HELIA_SIDECAR_BUILD_CONTEXT=$PWD/../Tornado-Backend-Stack/meshkit-sidecar-helia
+services:
+  helia:
+    build:
+      context: ${HELIA_SIDECAR_BUILD_CONTEXT:?set HELIA_SIDECAR_BUILD_CONTEXT to a checkout of Tornado-Backend-Stack/meshkit-sidecar-helia (see the comments above)}
+    environment:
+      MESHKIT_HELIA_SIDECAR_PORT: "5052"
+      MESHKIT_HELIA_SHARED_SECRET: ${HELIA_SIDECAR_SECRET:?set HELIA_SIDECAR_SECRET (openssl rand -hex 32)}
+      MESHKIT_HELIA_MAX_UPLOAD_MB: ${HELIA_MAX_UPLOAD_MB:-1}   # small, so the oversize test is quick; the client reads the same variable
+      HELIA_RETRIEVE_TIMEOUT_MS: "5000"
+      HELIA_NETWORK: offline                                    # no network stack; an unknown CID is a 504 after 5 s
+    ports:
+      - "127.0.0.1:${HELIA_HOST_PORT:-5052}:5052"             # loopback only
+    # The healthcheck is defined by the image (GET /health).
