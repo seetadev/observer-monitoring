@@ -35,6 +35,7 @@ Configuration (`HeliaClient.from_env()` returns `None` when `HELIA_SIDECAR_URL` 
 | `HELIA_SIDECAR_SECRET` | must equal the sidecar's `MESHKIT_HELIA_SHARED_SECRET`. Server-side only; plain `http://` only on a private network. |
 | `HELIA_API_PREFIX`, `HELIA_HEALTH_PATH` | `""` and `/health` for the sidecar itself; `/meshkit-helia` through the Tornado proxy (which has no caller authentication yet). |
 | `HELIA_MAX_UPLOAD_MB`, `HELIA_CONNECT_TIMEOUT`, `HELIA_REQUEST_TIMEOUT` | 20, 3 s, 8 s. |
+| `HELIA_ARCHIVE_ENABLED` | **`false` by default.** Archiving is opt-in; with it off the retention TTLs behave exactly as they do today. Only `1`/`true`/`yes`/`on` enable it (a typo does not). Read by `config.py`; there is no archive job yet, so today it gates nothing. |
 
 ## Where Helia fits in Observer
 
@@ -45,7 +46,7 @@ MongoDB's TTL indexes delete expired documents silently; there is no hook. Today
 
 - Why content addressing helps: an archived window cannot be altered without changing its CID, so anyone who recorded a CID somewhere else (a ticket, a report, a log line) can later prove what the monitor saw (for example, "was the server really down at 03:10?"). The `archives` rows in MongoDB are not tamper-evident by themselves; the CID only proves something against a copy kept elsewhere.
 - Windows must be small enough for the 20 MiB cap: a day of 1-minute statistics for one machine is 1,440 rows per collection; `MAX_EXPORT_ROWS` (100,000) already bounds exports. Split a window that would not fit.
-- The job must **run before the TTL fires** (archive a window once it is closed, not at the end of retention) and must never make deletion depend on Helia: Mongo keeps its TTL; the archive is an additional copy. If Helia is down the job logs one warning and retries later; an `archives` row exists only after a successful `put()`.
+- The job is **opt-in (`HELIA_ARCHIVE_ENABLED`, off by default)**: with the flag off nothing is archived and the TTLs delete exactly as they do today (a test pins that the TTL indexes are identical with the flag on or off). It must **run before the TTL fires** (archive a window once it is closed, not at the end of retention) and must never make deletion depend on Helia: Mongo keeps its TTL; the archive is an additional copy. If Helia is down the job logs one warning and retries later; an `archives` row exists only after a successful `put()`.
 - Runs best as its own small process next to `monitor.py` (it must not block the dashboard or the TCP listener); the admin CLI (`python run.py ...`) would get `archive` and `restore` commands. Neither exists.
 
 ### 2. Keep an export or a load-test report (weak unless the sidecar is online)
@@ -71,14 +72,25 @@ Observer's data is not personal data, but it is **sensitive infrastructure data*
 
 Recommendation: encrypt (AES-256-GCM, a fresh nonce per object, the window's identity as authenticated data) unless the sidecar is dedicated to Observer **and** offline. The Rhinestone scaffold (`AspiringDevelopers/Rhinestone`, branch `feature/helia-integration-points`) has a tested envelope module (`integrations/helia_crypto.py`) that could be copied; it is not duplicated here until the decision is made.
 
-**Retention conflict to decide first:** the TTLs exist to *remove* data. An immutable archive with no delete defeats them unless it is encrypted and the key is destroyed on schedule.
+The retention conflict is the first open question below; archiving stays off until it is answered.
 
 ## Open questions
-1. Is there a Helia sidecar for Observer to use, and where does it run (this repo's Compose has no place for a private-repo image; the Tornado-Backend-Stack network is shared with other apps)?
-2. Offline (one node, one volume: nothing replicates, a lost volume loses the archive) or online (replication, but CIDs become visible)? Without online, is an archive better than a plain file on a backup volume? Honest answer: only the content addressing (a verifiable CID) and a shareable index are new.
-3. What retention should apply to the archive itself, given there is no delete? Encrypt + destroy the key on a schedule, or accept permanent retention?
-4. Who may restore or read an archive: the single admin only (as today)?
-5. Should an `archives` row be shown on the dashboard (a "history" page) or stay an admin-CLI tool?
+
+**1. Retention conflict (decide before anyone enables archiving).** The TTLs exist to *remove* data: events after 30 days, load-test results after 90, statistics if `OBSERVER_STAT_RETENTION_DAYS` is set. The sidecar has **no delete**, so an archive outlives every one of those settings. Two coherent answers:
+
+| | Plaintext archive | Encrypted archive + scheduled key destruction |
+|---|---|---|
+| What is stored | the CSV/JSON window as is | AES-256-GCM ciphertext; one key per retention bucket (for example per month), kept by Observer, not the sidecar |
+| Retention promise | **broken by design**: the data is retained for as long as the sidecar's volume exists, whatever the TTL says; this must be stated plainly to anyone who relies on the 30/90-day figures | **kept**: when a bucket's retention ends the key is destroyed, and the ciphertext left in the sidecar is unreadable (crypto-shredding) |
+| Who can read it | anyone holding the sidecar secret (global `/list`, shared secret), and peers in `online` mode | only Observer, with the key; losing the key loses the archive |
+| Cost | none | key storage and rotation, a destruction job that must itself be reliable and audited, no de-duplication |
+
+Plaintext is only defensible if the sidecar is dedicated to Observer, offline, and the data is accepted as permanently retained. Anything else points at the encrypted option. Either way the archive's own retention is a new setting someone has to choose.
+
+**2.** Is there a Helia sidecar for Observer to use, and where does it run (this repo's Compose has no place for a private-repo image; the Tornado-Backend-Stack network is shared with other apps)?
+**3.** Offline (one node, one volume: nothing replicates, a lost volume loses the archive) or online (replication, but CIDs become visible)? Without online, is an archive better than a plain file on a backup volume? Honest answer: only the content addressing (a verifiable CID) and a shareable index are new.
+**4.** Who may restore or read an archive: the single admin only (as today)?
+**5.** Should an `archives` row be shown on the dashboard (a "history" page) or stay an admin-CLI tool?
 
 ## Running the opt-in integration test (real sidecar)
 

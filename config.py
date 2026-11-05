@@ -32,6 +32,11 @@ ALERT_WEBHOOK_URL = os.environ.get("OBSERVER_ALERT_WEBHOOK_URL", "").strip()
 ALERT_WEBHOOK_SECRET = os.environ.get("OBSERVER_ALERT_WEBHOOK_SECRET", "")
 EVENT_RETENTION_DAYS = int(os.environ.get("OBSERVER_EVENT_RETENTION_DAYS", "30"))
 
+# Archiving history to Helia (IPFS) before the retention TTLs delete it is opt-in. OFF by default: with it off the
+# TTLs above behave exactly as they always have. Only a clear yes (1/true/yes/on) turns it on, so a typo cannot.
+# There is no archive job yet (see HELIA_INTEGRATION.md); this is the gate any future job must sit behind.
+HELIA_ARCHIVE_ENABLED = _flag("HELIA_ARCHIVE_ENABLED", False)
+
 # Load tests (the `loadtest` worker). Targets must be listed: a load test is a request made by the server.
 # Entries: host names, "*.example.org", IP addresses or CIDR ranges. Empty = no target is allowed.
 LOADTEST_ALLOWED_HOSTS = [h.strip().lower() for h in os.environ.get("OBSERVER_LOADTEST_ALLOWED_HOSTS", "").split(",")
