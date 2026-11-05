@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\").ok'"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      TEST_MONGO_URL: mongodb://127.0.0.1:27017
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - run: playwright install --with-deps chromium
+      - run: ruff check .
+      - run: pytest -q -rx
+
+  docker:
+    runs-on: ubuntu-24.04
+    env:
+      # Placeholders so Compose can interpolate; the image is only built, never started.
+      OBSERVER_COOKIE_SECRET: ci-placeholder-not-a-secret
+      OBSERVER_ADMIN_PASSWORD_HASH: ci-placeholder-not-a-hash
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose config -q
+      - run: docker compose build
+      - run: docker compose --profile loadtest build loadtest
+      - run: docker run --rm --entrypoint python observer-monitoring-loadtest:local -c "import loadtest, root, run, agent"

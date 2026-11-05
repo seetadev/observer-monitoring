@@ -1,0 +1,19 @@
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["static"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+# The Helia scaffold (a client copied from the other repos, whose comments quote the sidecar contract) keeps its long lines.
+"integrations/helia.py" = ["E501"]
+"tests/helia_mock.py" = ["E501"]
+"tests/test_helia_client.py" = ["E501"]
+"tests/integration/test_helia_real.py" = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

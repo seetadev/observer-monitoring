@@ -1,0 +1,10 @@
+# Optional: pass with --config or OBSERVER_AGENT_CONFIG. Environment variables override these values.
+# The token is deliberately not accepted here: use OBSERVER_AGENT_TOKEN or token_file.
+server = "observer.example.org"
+port = 8889
+name = "web-01"
+token_file = "/etc/observer-agent/token"
+nic = "auto"
+interval = 1.0
+backoff_max = 60
+log_level = "INFO"

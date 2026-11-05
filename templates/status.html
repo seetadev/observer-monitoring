@@ -1,0 +1,23 @@
+{% module headModuleTemplate("Status & Alerts",["js/status.js"]) %}
+<body>
+    <div class="container-fluid">
+        <div class="row row-offcanvas row-offcanvas-left">
+            {% module sideBarModuleTemplate() %}
+            <div class="col-xs-12 col-sm-9" id="main-area" style="padding-top:20px">
+                <h3>Status</h3>
+                <div id="monitor-warning" class="alert alert-warning" style="display:none">
+                    The monitor process is not running, so states below may be out of date.
+                </div>
+                <table class="table table-condensed" id="states-table">
+                    <thead><tr><th>Type</th><th>Name</th><th>State</th><th>Since</th><th>Detail</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+                <h4>Recent events</h4>
+                <table class="table table-condensed" id="events-table">
+                    <thead><tr><th>Time</th><th>Event</th><th>Type</th><th>Name</th><th>Detail</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</body>

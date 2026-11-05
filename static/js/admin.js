@@ -1,30 +1,7 @@
 
-function submitPassword(){
-    _password = $("#password-field").val();
-
-    data = {'password':_password,'action':'LOGIN_ADMIN'};
-    $.ajax({
-        'data':data,
-        'type' : 'post',
-        'url' : _apiEndPoint,
-        'success':function(response){
-                    if(response.auth == "True"){
-                        populateMachinesList();
-                        return false;
-                    }
-                    else{
-                        alert("Wrong password. Try again.");
-                        return false;
-                    }
-                   },
-        'error':function(response){
-                    console.log(response);
-                  },
-        'data-type':'json'
-    });
-
-    return false;
-}
+$(document).ready(function(){
+    populateMachinesList();
+});
 
 function populateMachinesList(){
     $.ajax({
@@ -42,13 +19,17 @@ function populateMachinesList(){
 function loadRemoteMachines_Admin(machinesList){
     $("#machines-list").empty();
     for(var i=0 ; i<machinesList.length ; i++){
-        $("#machines-list").append("<div id=\""+machinesList[i]['name']+"\" class=\"admin-machine-list-item\">"+machinesList[i]['name']+"<i onclick=\"deleteMachine(this)\" class=\"fa fa-trash machine-list-item-del-btn\" aria-hidden=\"true\"></div>")
+        var $item = $("<div class=\"admin-machine-list-item\"></div>").attr("data-machine", machinesList[i]['name']);
+        $item.append(document.createTextNode(machinesList[i]['name']));
+        $item.append($("<i class=\"fa fa-trash machine-list-item-del-btn\" aria-hidden=\"true\"></i>")
+            .on("click", function(){ deleteMachine(this); }));
+        $("#machines-list").append($item);
     }
 }
 
 function deleteMachine(el){
     var listElement = $(el).parent();
-    var machineName = $(listElement).attr("id");
+    var machineName = $(listElement).attr("data-machine");
     $.ajax({
         "type":"POST",
         "data" : {action:"DELETE_REMOTE_MACHINE",machine_id:machineName},

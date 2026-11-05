@@ -60,3 +60,19 @@ target/
 
 #Ipython Notebook
 .ipynb_checkpoints
+
+# IDE / editor
+.idea/
+.vscode/
+*~
+
+# Local environment
+.venv/
+venv/
+.env
+.pytest_cache/
+.ruff_cache/
+
+# Runtime output (test screenshots, XLSX/CSV exports); keep the directory itself
+files_buffer/*
+!files_buffer/.gitkeep

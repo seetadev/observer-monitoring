@@ -1,0 +1,4 @@
+# Certificate and key for the TLS profile (never commit them)
+*.pem
+*.key
+!.gitignore
